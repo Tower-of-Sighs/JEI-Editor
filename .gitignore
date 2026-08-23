@@ -1,0 +1,18 @@
+.gradle/
+build/
+run/
+out/
+*.iml
+.idea/
+
+# Local dependency mirrors and downloaded caches.
+.maven-mirror/
+modrinth-maven/
+
+# Runtime/build leftovers produced inside target projects.
+**/.gradle/
+**/build/
+**/run/
+targets/**/img.png
+*.tmp-*
+

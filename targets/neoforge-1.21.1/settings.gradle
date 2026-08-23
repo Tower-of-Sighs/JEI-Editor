@@ -1,0 +1,20 @@
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        maven { url = 'https://maven.neoforged.net/releases' }
+        mavenCentral()
+    }
+}
+
+dependencyResolutionManagement {
+    repositories {
+        maven { url = uri('../../.maven-mirror') }
+        maven { url = uri('https://maven.neoforged.net/releases') }
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'JEI Editor-neoforge-1.21.1'
+
+include 'common'
+project(':common').projectDir = file('../../common')

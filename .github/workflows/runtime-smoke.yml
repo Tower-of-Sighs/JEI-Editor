@@ -1,0 +1,74 @@
+name: Dedicated Server Runtime Smoke
+
+on:
+  push:
+    paths:
+      - 'common/**'
+      - 'targets/**'
+      - 'scripts/runtime-smoke.ps1'
+      - 'scripts/discover-targets.ps1'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'settings.gradle'
+      - 'build.gradle'
+      - '.github/workflows/runtime-smoke.yml'
+  pull_request:
+    paths:
+      - 'common/**'
+      - 'targets/**'
+      - 'scripts/runtime-smoke.ps1'
+      - 'scripts/discover-targets.ps1'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'settings.gradle'
+      - 'build.gradle'
+      - '.github/workflows/runtime-smoke.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-smoke-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  discover-targets:
+    name: Discover Enabled Targets
+    runs-on: windows-latest
+    outputs:
+      matrix: ${{ steps.discover.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build target matrix
+        id: discover
+        shell: pwsh
+        run: |
+          $matrix = .\scripts\discover-targets.ps1
+          "matrix=$matrix" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+  runtime-smoke:
+    name: ${{ matrix.target }} Runtime Smoke
+    needs: discover-targets
+    runs-on: windows-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover-targets.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Run dedicated server smoke test
+        shell: pwsh
+        run: .\scripts\runtime-smoke.ps1 -Target ${{ matrix.target }}
+      - name: Upload runtime logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}-runtime-smoke
+          path: targets/${{ matrix.target }}/build/runtime-smoke/*
+          if-no-files-found: ignore
