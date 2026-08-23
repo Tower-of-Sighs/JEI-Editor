@@ -5,7 +5,9 @@ import cc.sighs.JEIEditor.editor.EditorModel;
 import cc.sighs.JEIEditor.editor.EditorSlot;
 import cc.sighs.JEIEditor.editor.RecipePatch;
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import com.mojang.serialization.JsonOps;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
@@ -16,6 +18,8 @@ import net.minecraft.network.protocol.game.ClientboundUpdateRecipesPacket;
 import net.minecraft.world.item.crafting.RecipeHolder;
 import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.item.crafting.ShapelessRecipe;
+import net.minecraft.world.item.crafting.AbstractCookingRecipe;
+import net.minecraft.world.item.crafting.Ingredient;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -312,9 +316,10 @@ final class RecipeEditsApplier {
                 ingredients.add(ingredientJson(ingredient));
             }
             recipe.add("ingredients", ingredients);
-        } else if (holder.value() instanceof net.minecraft.world.item.crafting.AbstractCookingRecipe) {
+        } else if (holder.value() instanceof AbstractCookingRecipe) {
             if (inputs.size() != 1 || inputs.get(0) == null) return Optional.empty();
-            recipe.add("ingredient", ingredientJson(inputs.get(0)));
+            recipe.add("ingredient", cookingIngredientJson(
+                    (AbstractCookingRecipe) holder.value(), patch, inputs.get(0)));
             recipe.addProperty("experience", cookingExperience(model, patch));
             recipe.addProperty("cookingtime", cookingTime(model, patch));
         } else {
@@ -322,6 +327,31 @@ final class RecipeEditsApplier {
         }
         recipe.add("result", resultJson(output));
         return Optional.of(recipe);
+    }
+
+    /**
+     * Keep a tag/multi-item cooking ingredient when the input was untouched.
+     * Once the user edits that slot, the patch intentionally narrows it to the
+     * selected concrete item.
+     */
+    private static JsonElement cookingIngredientJson(AbstractCookingRecipe recipe,
+                                                      RecipePatch patch,
+                                                      EditorIngredient editedInput) {
+        if (patch.fields().containsKey("input.0.item")
+                || patch.fields().containsKey("input.0.count")) {
+            return ingredientJson(editedInput);
+        }
+        try {
+            Optional<JsonElement> encoded = Ingredient.CODEC
+                    .encodeStart(JsonOps.INSTANCE, recipe.getIngredients().get(0)).result();
+            if (encoded.isPresent()) {
+                return encoded.get();
+            }
+        } catch (RuntimeException ignored) {
+            // Fall back to the representative item if a custom codec cannot
+            // be encoded in this context.
+        }
+        return ingredientJson(editedInput);
     }
 
     private static boolean validatePatch(EditorModel model, RecipePatch patch) {
@@ -355,9 +385,6 @@ final class RecipeEditsApplier {
                 slot = new EditorSlot(key.substring(0, separator), "input", null);
             }
             if (slot == null || (!"item".equals(property) && !"count".equals(property))) {
-                return false;
-            }
-            if ("output".equals(slot.role()) && "item".equals(property)) {
                 return false;
             }
             if ("item".equals(property)) {

@@ -24,6 +24,7 @@ import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.lang.reflect.Field;
 
 @JeiPlugin
 public final class JeiRecipeEditorPlugin implements IModPlugin {
@@ -89,28 +90,19 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         if (patches.isEmpty()) {
             return;
         }
-        Set<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> seenLayouts =
-                Collections.newSetFromMap(new IdentityHashMap<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>, Boolean>());
         Set<String> seenAreas = new HashSet<String>();
-        int step = 8;
-        for (int x = 0; x < gui.width; x += step) {
-            for (int y = 0; y < gui.height; y += step) {
-                Optional<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> layout =
-                        gui.getRecipeLayoutUnderMouse(x + 0.5D, y + 0.5D);
-                if (!layout.isPresent() || !seenLayouts.add(layout.get())) {
-                    continue;
-                }
-                Object displayedRecipe = layout.get().getRecipeLayout().getRecipe();
-                RecipePatch patch = findPendingPatch(displayedRecipe, patches);
-                if (patch == null || patch.fields().isEmpty()) {
-                    continue;
-                }
-                Optional<EditorModel> model = resolveModel(displayedRecipe);
-                if (!model.isPresent()) {
-                    continue;
-                }
-                IRecipeSlotsView slots = layout.get().getRecipeLayout().getRecipeSlotsView();
-                Rect2i recipeArea = layout.get().getRecipeLayout().getRect();
+        for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
+            Object displayedRecipe = layout.getRecipeLayout().getRecipe();
+            RecipePatch patch = findPendingPatch(displayedRecipe, patches);
+            if (patch == null || patch.fields().isEmpty()) {
+                continue;
+            }
+            Optional<EditorModel> model = resolveModel(displayedRecipe);
+            if (!model.isPresent()) {
+                continue;
+            }
+            IRecipeSlotsView slots = layout.getRecipeLayout().getRecipeSlotsView();
+            Rect2i recipeArea = layout.getRecipeLayout().getRect();
                 for (mezz.jei.api.gui.ingredient.IRecipeSlotView view : slots.getSlotViews()) {
                     if (!(view instanceof mezz.jei.api.gui.ingredient.IRecipeSlotDrawable)
                             || (view.getRole() != RecipeIngredientRole.INPUT
@@ -136,7 +128,6 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
                                 screenArea.getX() + screenArea.getWidth(),
                                 screenArea.getY() + screenArea.getHeight(), 0x662b6cff);
                     }
-                }
             }
         }
     }
@@ -150,26 +141,17 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         if (patches.isEmpty()) {
             return;
         }
-        Set<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> seenLayouts =
-                Collections.newSetFromMap(new IdentityHashMap<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>, Boolean>());
-        for (int x = 0; x < gui.width; x += 8) {
-            for (int y = 0; y < gui.height; y += 8) {
-                Optional<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> layout =
-                        gui.getRecipeLayoutUnderMouse(x + 0.5D, y + 0.5D);
-                if (!layout.isPresent() || !seenLayouts.add(layout.get())) {
-                    continue;
-                }
-                Object displayedRecipe = layout.get().getRecipeLayout().getRecipe();
-                RecipePatch patch = findPendingPatch(displayedRecipe, patches);
-                if (patch == null) {
-                    continue;
-                }
-                Optional<EditorModel> model = resolveModel(displayedRecipe);
-                if (model.isPresent()) {
-                    ClientEditorState.applyPreview(
-                            layout.get().getRecipeLayout().getRecipeSlotsView(), model.get(), patch,
-                            displayedRecipe);
-                }
+        for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
+            Object displayedRecipe = layout.getRecipeLayout().getRecipe();
+            RecipePatch patch = findPendingPatch(displayedRecipe, patches);
+            if (patch == null) {
+                continue;
+            }
+            Optional<EditorModel> model = resolveModel(displayedRecipe);
+            if (model.isPresent()) {
+                ClientEditorState.applyPreview(
+                        layout.getRecipeLayout().getRecipeSlotsView(), model.get(), patch,
+                        displayedRecipe);
             }
         }
     }
@@ -199,28 +181,28 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
     }
 
     private static Optional<RecipeTarget> resolveTarget(RecipesGui gui, double mouseX, double mouseY) {
-        Optional<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> layout =
-                gui.getRecipeLayoutUnderMouse(mouseX, mouseY);
-        if (!layout.isPresent()) {
-            return Optional.empty();
+        for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
+            if (!layout.getRecipeLayout().isMouseOver(mouseX, mouseY)) {
+                continue;
+            }
+            Optional<mezz.jei.api.gui.inputs.RecipeSlotUnderMouse> slot =
+                    layout.getRecipeLayout().getSlotUnderMouse(mouseX, mouseY);
+            if (!slot.isPresent()) {
+                continue;
+            }
+            Object displayedRecipe = layout.getRecipeLayout().getRecipe();
+            Optional<EditorModel> model = resolveModel(displayedRecipe);
+            if (!model.isPresent()) {
+                continue;
+            }
+            IRecipeSlotsView slots = layout.getRecipeLayout().getRecipeSlotsView();
+            String slotKey = RecipeGhostHandler.slotKey(slots.getSlotViews(), slot.get().slot(), displayedRecipe,
+                    model.get());
+            if (slotKey != null) {
+                return Optional.of(new RecipeTarget(model.get(), slotKey, slots, null, displayedRecipe));
+            }
         }
-        Optional<mezz.jei.api.gui.inputs.RecipeSlotUnderMouse> slot =
-                layout.get().getRecipeLayout().getSlotUnderMouse(mouseX, mouseY);
-        if (!slot.isPresent()) {
-            return Optional.empty();
-        }
-        Optional<EditorModel> model = resolveModel(layout.get().getRecipeLayout().getRecipe());
-        if (!model.isPresent()) {
-            return Optional.empty();
-        }
-        IRecipeSlotsView slots = layout.get().getRecipeLayout().getRecipeSlotsView();
-        Object displayedRecipe = layout.get().getRecipeLayout().getRecipe();
-        String slotKey = RecipeGhostHandler.slotKey(slots.getSlotViews(), slot.get().slot(), displayedRecipe,
-                model.get());
-        if (slotKey == null) {
-            return Optional.empty();
-        }
-        return Optional.of(new RecipeTarget(model.get(), slotKey, slots, null, displayedRecipe));
+        return Optional.empty();
     }
 
     private static Optional<EditorModel> resolveModel(Object displayedRecipe) {
@@ -254,37 +236,29 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
     }
 
     @SuppressWarnings("removal")
-    private static List<RecipeTarget> visibleInputTargets(RecipesGui gui) {
+    private static List<RecipeTarget> visibleEditableTargets(RecipesGui gui) {
         List<RecipeTarget> targets = new ArrayList<RecipeTarget>();
-        Set<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> seenLayouts =
-                Collections.newSetFromMap(new IdentityHashMap<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>, Boolean>());
         Set<String> seenAreas = new HashSet<String>();
-        int step = 8;
-        for (int x = 0; x < gui.width; x += step) {
-            for (int y = 0; y < gui.height; y += step) {
-                Optional<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> layout =
-                        gui.getRecipeLayoutUnderMouse(x + 0.5D, y + 0.5D);
-                if (!layout.isPresent() || !seenLayouts.add(layout.get())) {
-                    continue;
-                }
-                Optional<EditorModel> model = resolveModel(layout.get().getRecipeLayout().getRecipe());
-                if (!model.isPresent()) {
-                    continue;
-                }
-                IRecipeSlotsView slots = layout.get().getRecipeLayout().getRecipeSlotsView();
+        for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
+            Optional<EditorModel> model = resolveModel(layout.getRecipeLayout().getRecipe());
+            if (!model.isPresent()) {
+                continue;
+            }
+            IRecipeSlotsView slots = layout.getRecipeLayout().getRecipeSlotsView();
                 for (mezz.jei.api.gui.ingredient.IRecipeSlotView view : slots.getSlotViews()) {
-                    if (view.getRole() != RecipeIngredientRole.INPUT
+                    if ((view.getRole() != RecipeIngredientRole.INPUT
+                            && view.getRole() != RecipeIngredientRole.OUTPUT)
                             || !(view instanceof mezz.jei.api.gui.ingredient.IRecipeSlotDrawable)) {
                         continue;
                     }
                     mezz.jei.api.gui.ingredient.IRecipeSlotDrawable drawable =
                             (mezz.jei.api.gui.ingredient.IRecipeSlotDrawable) view;
-                    Object displayedRecipe = layout.get().getRecipeLayout().getRecipe();
+                    Object displayedRecipe = layout.getRecipeLayout().getRecipe();
                     String slotKey = RecipeGhostHandler.slotKey(slots.getSlotViews(), drawable, displayedRecipe,
                             model.get());
-                    if (slotKey != null && slotKey.startsWith("input.")) {
+                    if (slotKey != null && (slotKey.startsWith("input.") || "output".equals(slotKey))) {
                         Rect2i slotArea = drawable.getRect();
-                        Rect2i recipeArea = layout.get().getRecipeLayout().getRect();
+                        Rect2i recipeArea = layout.getRecipeLayout().getRect();
                         Rect2i screenArea = new Rect2i(
                                 recipeArea.getX() + slotArea.getX(),
                                 recipeArea.getY() + slotArea.getY(),
@@ -296,10 +270,70 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
                             targets.add(new RecipeTarget(model.get(), slotKey, slots, screenArea, displayedRecipe));
                         }
                     }
-                }
             }
         }
         return targets;
+    }
+
+    /**
+     * Returns every layout currently shown by JEI. The public RecipesGui API
+     * only exposes the first layout under a point, which is insufficient when
+     * a page contains multiple recipe layouts. The reflective lookup is kept
+     * in this small compatibility boundary and still returns JEI's layout
+     * abstraction; the point-scan fallback preserves compatibility if JEI
+     * changes its internal container in a future release.
+     */
+    @SuppressWarnings({"unchecked", "removal"})
+    private static List<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> visibleRecipeLayouts(RecipesGui gui) {
+        try {
+            Object layouts = null;
+            for (Field field : RecipesGui.class.getDeclaredFields()) {
+                if (mezz.jei.gui.recipes.RecipeGuiLayouts.class.isAssignableFrom(field.getType())) {
+                    field.setAccessible(true);
+                    layouts = field.get(gui);
+                    break;
+                }
+            }
+            if (layouts != null) {
+                for (Field field : layouts.getClass().getDeclaredFields()) {
+                    if (!List.class.isAssignableFrom(field.getType())) {
+                        continue;
+                    }
+                    field.setAccessible(true);
+                    Object value = field.get(layouts);
+                    if (!(value instanceof List<?>)) {
+                        continue;
+                    }
+                    List<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> result =
+                            new ArrayList<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>>();
+                    for (Object entry : (List<?>) value) {
+                        if (entry instanceof mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>) {
+                            result.add((mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>) entry);
+                        }
+                    }
+                    if (!result.isEmpty()) {
+                        return result;
+                    }
+                }
+            }
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            // Fall through to the public point-query compatibility path.
+        }
+
+        Set<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> seenLayouts =
+                Collections.newSetFromMap(new IdentityHashMap<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>, Boolean>());
+        List<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> result =
+                new ArrayList<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>>();
+        for (int x = 0; x < gui.width; x += 8) {
+            for (int y = 0; y < gui.height; y += 8) {
+                Optional<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> layout =
+                        gui.getRecipeLayoutUnderMouse(x + 0.5D, y + 0.5D);
+                if (layout.isPresent() && seenLayouts.add(layout.get())) {
+                    result.add(layout.get());
+                }
+            }
+        }
+        return result;
     }
 
     private static final class RecipeTarget {
@@ -326,17 +360,17 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
                 return Collections.emptyList();
             }
 
-            List<RecipeTarget> inputTargets = visibleInputTargets(gui);
-            if (!inputTargets.isEmpty()) {
+            List<RecipeTarget> editableTargets = visibleEditableTargets(gui);
+            if (!editableTargets.isEmpty()) {
                 List<Rect2i> highlightAreas = new ArrayList<Rect2i>();
-                for (RecipeTarget target : inputTargets) {
+                for (RecipeTarget target : editableTargets) {
                     if (target.area != null) {
                         highlightAreas.add(target.area);
                     }
                 }
                 ClientEditorState.setGhostHighlightAreas(highlightAreas);
-                List<Target<I>> targets = new ArrayList<Target<I>>(inputTargets.size());
-                for (RecipeTarget recipeTarget : inputTargets) {
+                List<Target<I>> targets = new ArrayList<Target<I>>(editableTargets.size());
+                for (RecipeTarget recipeTarget : editableTargets) {
                     targets.add(new Target<I>() {
                         @Override
                         public Rect2i getArea() {
@@ -372,7 +406,7 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         private static void applyAtTarget(RecipeTarget target, ItemStack stack) {
             try {
                 ClientEditorState.rememberTarget(target.model, target.slotKey, target.slots, target.recipe);
-                ClientEditorState.setPendingPatch(RecipeEditorAdapters.replaceInput(
+                ClientEditorState.setPendingPatch(RecipeEditorAdapters.replaceSlot(
                         target.model, target.slotKey, stack));
                 ClientEditorState.setLastDrop("Placed " + stack.getHoverName().getString() + " in " + target.slotKey);
             } catch (IllegalArgumentException exception) {
@@ -399,13 +433,14 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
                 ClientEditorState.setLastDrop("No editable recipe slot under cursor");
                 return;
             }
-            if (!target.get().slotKey.startsWith("input.")) {
-                ClientEditorState.setLastDrop("The target slot is not an editable input");
+            if (!target.get().slotKey.startsWith("input.") && !"output".equals(target.get().slotKey)) {
+                ClientEditorState.setLastDrop("The target slot is not editable");
                 return;
             }
             ClientEditorState.rememberTarget(target.get().model, target.get().slotKey, target.get().slots,
                     target.get().recipe);
-            ClientEditorState.setPendingPatch(RecipeEditorAdapters.replaceInput(target.get().model, target.get().slotKey, stack));
+            ClientEditorState.setPendingPatch(RecipeEditorAdapters.replaceSlot(
+                    target.get().model, target.get().slotKey, stack));
             ClientEditorState.setLastDrop("Placed " + stack.getHoverName().getString() + " in " + target.get().slotKey);
         }
 

@@ -34,6 +34,11 @@ final class ClientEditorState {
     private static double lastMouseY;
     private static boolean mousePositionKnown;
     private static Screen mouseScreen;
+    // A recipe sync can make JEI rebuild or temporarily replace its screen.
+    // Keep the screen identity until the save result arrives so that only the
+    // page affected by this save is restored.
+    private static Screen saveScreen;
+    private static boolean saveRestorePending;
     private static final RecipeEditSession session = new RecipeEditSession();
     private static EditorModel lastModel;
     private static String lastSlotKey;
@@ -149,6 +154,20 @@ final class ClientEditorState {
 
     static void closeRecipeScreen() {
         clearPendingPatch();
+    }
+
+    static void markSaveSubmitted(Screen screen) {
+        saveScreen = screen;
+        saveRestorePending = true;
+    }
+
+    static Screen getSaveScreen() {
+        return saveRestorePending ? saveScreen : null;
+    }
+
+    static void clearSaveRestore() {
+        saveScreen = null;
+        saveRestorePending = false;
     }
 
     static void rememberTarget(EditorModel model, String slotKey, IRecipeSlotsView slots, Object recipe) {
@@ -327,6 +346,10 @@ final class ClientEditorState {
 
     static void applyResult(boolean success, String message, String recipeId) {
         lastDrop = message + (recipeId.isEmpty() ? "" : ": " + recipeId);
+        // The response is the end of this save attempt, whether it succeeded
+        // or failed. A failed request must not restore a page on a later,
+        // unrelated recipe synchronization.
+        clearSaveRestore();
         if (success) {
             session.reset();
             clearPreview();

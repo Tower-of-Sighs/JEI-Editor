@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-/** Adapter for simple vanilla smelting recipes. */
+/** Adapter for standard vanilla cooking recipes. */
 final class CookingRecipeEditorAdapter {
     private CookingRecipeEditorAdapter() { }
 
@@ -56,6 +56,17 @@ final class CookingRecipeEditorAdapter {
         return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
     }
 
+    static RecipePatch replaceOutput(EditorModel model, ItemStack stack) {
+        Optional<EditorIngredient> ingredient = simpleStack(stack);
+        if (!ingredient.isPresent()) {
+            throw new IllegalArgumentException("only simple output items can be used");
+        }
+        LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
+        fields.put("output.item", ingredient.get().itemId());
+        fields.put("output.count", Integer.toString(ingredient.get().count()));
+        return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
+    }
+
     static RecipePatch setOutputCount(EditorModel model, int count) {
         if (count < 1 || count > 64) throw new IllegalArgumentException("output count must be between 1 and 64");
         LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
@@ -80,7 +91,17 @@ final class CookingRecipeEditorAdapter {
     private static Optional<EditorIngredient> simpleIngredient(Ingredient ingredient) {
         if (ingredient == null || ingredient.isEmpty() || !ingredient.isSimple()) return Optional.empty();
         ItemStack[] items = ingredient.getItems();
-        return items.length == 1 ? simpleStack(items[0]) : Optional.<EditorIngredient>empty();
+        // JEI commonly exposes furnace inputs backed by an item tag, which
+        // expands to several stacks. The editor writes a concrete item when
+        // that slot is replaced, so use the first valid stack as the model's
+        // representative while leaving untouched ingredients intact on save.
+        for (ItemStack item : items) {
+            Optional<EditorIngredient> value = simpleStack(item);
+            if (value.isPresent()) {
+                return value;
+            }
+        }
+        return Optional.empty();
     }
 
     private static Optional<EditorIngredient> simpleStack(ItemStack stack) {

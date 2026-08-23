@@ -18,6 +18,14 @@ final class RecipeEditorAdapters {
                 ? CookingRecipeEditorAdapter.replaceInput(model, slotKey, stack)
                 : CraftingRecipeEditorAdapter.replaceInput(model, slotKey, stack);
     }
+    static RecipePatch replaceSlot(EditorModel model, String slotKey, ItemStack stack) {
+        if ("output".equals(slotKey)) {
+            return CookingRecipeEditorAdapter.supportsSerializer(model.serializerId())
+                    ? CookingRecipeEditorAdapter.replaceOutput(model, stack)
+                    : CraftingRecipeEditorAdapter.replaceOutput(model, stack);
+        }
+        return replaceInput(model, slotKey, stack);
+    }
     static RecipePatch clearSlot(EditorModel model, String slotKey) {
         if (CookingRecipeEditorAdapter.supportsSerializer(model.serializerId())) {
             throw new IllegalArgumentException("cooking input cannot be cleared; replace it with another item");

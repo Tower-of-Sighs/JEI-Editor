@@ -98,6 +98,17 @@ final class CraftingRecipeEditorAdapter {
         return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
     }
 
+    static RecipePatch replaceOutput(EditorModel model, ItemStack stack) {
+        Optional<EditorIngredient> ingredient = simpleStack(stack);
+        if (!ingredient.isPresent()) {
+            throw new IllegalArgumentException("only simple output items can be used");
+        }
+        LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
+        fields.put("output.item", ingredient.get().itemId());
+        fields.put("output.count", Integer.toString(ingredient.get().count()));
+        return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
+    }
+
     static RecipePatch clearSlot(EditorModel model, String slotKey) {
         if (!"minecraft:crafting_shaped".equals(model.serializerId()) || !slotKey.startsWith("input.")) {
             throw new IllegalArgumentException("only shaped crafting input slots can be cleared");

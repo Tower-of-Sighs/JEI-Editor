@@ -7,6 +7,7 @@ import net.minecraft.network.chat.Component;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.RecipesUpdatedEvent;
 import net.neoforged.neoforge.client.event.ScreenEvent;
 
@@ -55,6 +56,13 @@ public final class ClientEditorEvents {
     public static void onMouseButtonReleased(ScreenEvent.MouseButtonReleased.Pre event) {
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
             ClientEditorState.rememberMousePosition(event.getScreen(), event.getMouseX(), event.getMouseY());
+            if (event.getButton() == 0
+                    && buttonUnderMouse(event.getScreen(), event.getMouseX(), event.getMouseY()) != null) {
+                // The editor invokes its button from MouseButtonPressed.Pre.
+                // Do not let JEI execute the same physical click again on
+                // release, which can also trigger its page navigation/close.
+                event.setCanceled(true);
+            }
         }
         if (event.getButton() == 0) {
             ClientEditorState.armToggle();
@@ -92,7 +100,7 @@ public final class ClientEditorEvents {
             event.setCanceled(true);
             return;
         }
-        if (!gui.getRecipeLayoutUnderMouse(event.getMouseX(), event.getMouseY()).isPresent()) {
+        if (isBlankJeiArea(gui, event.getMouseX(), event.getMouseY())) {
             openMenu(gui, event.getMouseX(), event.getMouseY());
             event.setCanceled(true);
             return;
@@ -103,6 +111,27 @@ public final class ClientEditorEvents {
         if (JeiRecipeEditorPlugin.clearInputAtMouse(gui, event.getMouseX(), event.getMouseY())) {
             event.setCanceled(true);
         }
+    }
+
+    /**
+     * The recipe-layout lookup only covers the central recipe panels. JEI's
+     * bookmark and ingredient sidebars are outside those layouts, but they
+     * still own the mouse when an ingredient is under the pointer. Only a
+     * genuinely empty JEI area should open the editor context menu.
+     */
+    private static boolean isBlankJeiArea(RecipesGui gui, double mouseX, double mouseY) {
+        // JEI's left/right ingredient overlays are outside RecipesGui's own
+        // area. Do not treat those overlay regions as editor-menu space.
+        if (!gui.isMouseOver(mouseX, mouseY)) {
+            return false;
+        }
+        if (gui.getRecipeLayoutUnderMouse(mouseX, mouseY).isPresent()) {
+            return false;
+        }
+        if (gui.getIngredientUnderMouse(mouseX, mouseY).findAny().isPresent()) {
+            return false;
+        }
+        return !gui.getDraggableIngredientUnderMouse(mouseX, mouseY).findAny().isPresent();
     }
 
     /** The output count is adjusted with the wheel while the pointer is over the output slot. */
@@ -124,14 +153,41 @@ public final class ClientEditorEvents {
     @SubscribeEvent
     public static void onRecipesUpdated(RecipesUpdatedEvent event) {
         ClientEditorState.clearPreview();
+        restoreSavedRecipeScreen();
         if (ClientEditorState.isEditing()) {
             ClientEditorState.setLastDrop("Recipes synchronized from server");
         }
     }
 
     @SubscribeEvent
+    public static void onClientTick(ClientTickEvent.Post event) {
+        // A JEI screen replacement may happen just after RecipesUpdatedEvent;
+        // keep the same page visible until the save result clears the marker.
+        restoreSavedRecipeScreen();
+    }
+
+    private static void restoreSavedRecipeScreen() {
+        net.minecraft.client.gui.screens.Screen savedScreen = ClientEditorState.getSaveScreen();
+        Minecraft minecraft = Minecraft.getInstance();
+        if (savedScreen == null || minecraft.screen == savedScreen
+                || !ClientEditorState.isRecipeScreen(savedScreen)) {
+            return;
+        }
+        closeMenu(savedScreen);
+        minecraft.setScreen(savedScreen);
+    }
+
+    @SubscribeEvent
     public static void onScreenClosing(ScreenEvent.Closing event) {
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
+            if (ClientEditorState.getSaveScreen() != null) {
+                // The close belongs to the recipe synchronization started by
+                // Save, including a transient JEI replacement screen. Keep
+                // the client edit session alive until the result packet
+                // clears the save marker and the page is restored.
+                closeMenu(event.getScreen());
+                return;
+            }
             initializedRecipeScreens.remove(event.getScreen());
             closeMenu(event.getScreen());
             ClientEditorState.clearGhostHighlightAreas();
@@ -204,6 +260,7 @@ public final class ClientEditorEvents {
             } else if (ClientEditorState.getPendingPatches().isEmpty()) {
                 ClientEditorState.setLastDrop("No pending recipe edit");
             } else {
+                ClientEditorState.markSaveSubmitted(screen);
                 NeoForge121Network.send(ClientEditorState.getPendingPatches());
                 ClientEditorState.setLastDrop("Recipe edits submitted");
             }
