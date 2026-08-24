@@ -5,6 +5,7 @@ import cc.sighs.JEIEditor.editor.RecipePatch;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.RecipeHolder;
+import mezz.jei.api.recipe.vanilla.IJeiFuelingRecipe;
 import java.util.Optional;
 
 final class RecipeEditorAdapters {
@@ -12,6 +13,11 @@ final class RecipeEditorAdapters {
     static Optional<EditorModel> createModel(RecipeHolder<?> holder, HolderLookup.Provider registries) {
         Optional<EditorModel> crafting = CraftingRecipeEditorAdapter.createModel(holder, registries);
         return crafting.isPresent() ? crafting : CookingRecipeEditorAdapter.createModel(holder, registries);
+    }
+    static Optional<EditorModel> createFuelModel(Object recipe) {
+        return recipe instanceof IJeiFuelingRecipe
+                ? FuelRecipeEditorAdapter.createModel((IJeiFuelingRecipe) recipe)
+                : Optional.<EditorModel>empty();
     }
     static RecipePatch replaceInput(EditorModel model, String slotKey, ItemStack stack) {
         return CookingRecipeEditorAdapter.supportsSerializer(model.serializerId())
@@ -39,4 +45,5 @@ final class RecipeEditorAdapters {
     }
     static RecipePatch setExperience(EditorModel model, float value) { return CookingRecipeEditorAdapter.setExperience(model, value); }
     static RecipePatch setCookingTime(EditorModel model, int value) { return CookingRecipeEditorAdapter.setCookingTime(model, value); }
+    static RecipePatch setFuelBurnTime(EditorModel model, int value) { return FuelRecipeEditorAdapter.setBurnTime(model, value); }
 }

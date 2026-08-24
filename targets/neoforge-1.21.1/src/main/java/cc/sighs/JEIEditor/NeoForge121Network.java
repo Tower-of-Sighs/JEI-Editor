@@ -29,6 +29,7 @@ final class NeoForge121Network {
     static void register(RegisterPayloadHandlersEvent event) {
         event.registrar("1")
                 .playToServer(RecipeEditPayload.TYPE, RecipeEditPayload.STREAM_CODEC, NeoForge121Network::handleRecipeEdit)
+                .playToServer(RecipeReloadPayload.TYPE, RecipeReloadPayload.STREAM_CODEC, NeoForge121Network::handleRecipeReload)
                 .playToServer(RecipeEditDeletePayload.TYPE, RecipeEditDeletePayload.STREAM_CODEC, NeoForge121Network::handleRecipeDelete)
                 .playToClient(RecipeEditResultPayload.TYPE, RecipeEditResultPayload.STREAM_CODEC, NeoForge121Network::handleRecipeResult);
     }
@@ -37,8 +38,66 @@ final class NeoForge121Network {
         PacketDistributor.sendToServer(RecipeEditPayload.fromBundle(new RecipeEditBundle(patches)));
     }
 
+    static void sendReload() {
+        PacketDistributor.sendToServer(new RecipeReloadPayload());
+    }
+
     static void sendDelete(String recipeId) {
         PacketDistributor.sendToServer(new RecipeEditDeletePayload(recipeId));
+    }
+
+    private static void handleRecipeReload(RecipeReloadPayload payload, IPayloadContext context) {
+        context.enqueueWork(() -> {
+            if (context.player() == null) {
+                context.reply(RecipeEditResultPayload.failure("Permission denied", ""));
+                return;
+            }
+            MinecraftServer server = context.player().getServer();
+            if (server == null) {
+                context.reply(RecipeEditResultPayload.failure("Unknown server", ""));
+                return;
+            }
+            List<RecipePatch> patches = new ArrayList<RecipePatch>(RecipeEditsSavedData.get(server).patches().values());
+            for (RecipePatch patch : patches) {
+                String policyId = FuelRecipeEditorAdapter.itemId(patch)
+                        .map(ResourceLocation::toString).orElse(patch.recipeId());
+                if (!RecipeEditorPolicy.load(server).canEdit(
+                        (net.minecraft.server.level.ServerPlayer) context.player(), policyId)) {
+                    context.reply(RecipeEditResultPayload.failure("Permission or namespace policy denied", patch.recipeId()));
+                    return;
+                }
+            }
+            if (patches.isEmpty()) {
+                context.reply(RecipeEditResultPayload.failure("No saved recipe edits", ""));
+                return;
+            }
+            if (!RecipeEditCoordinator.tryBegin(server)) {
+                context.reply(RecipeEditResultPayload.failure("Another recipe operation is in progress", ""));
+                return;
+            }
+            reloadSavedBatch(server, context, patches, 0);
+        });
+    }
+
+    private static void reloadSavedBatch(MinecraftServer server, IPayloadContext context,
+                                         List<RecipePatch> patches, int index) {
+        if (index >= patches.size()) {
+            RecipeEditCoordinator.finish(server);
+            context.reply(RecipeEditResultPayload.success(
+                    "Reloaded " + patches.size() + " saved recipe edits", ""));
+            return;
+        }
+        RecipePatch patch = patches.get(index);
+        RecipeEditsApplier.reloadSaved(server, patch).whenComplete((ignored, error) -> server.execute(() -> {
+            if (error != null) {
+                LOGGER.error("Failed to reload saved recipe edit for {}", patch.recipeId(), error);
+                RecipeEditCoordinator.finish(server);
+                context.reply(RecipeEditResultPayload.failure(
+                        "Recipe reload failed; check server log", patch.recipeId()));
+                return;
+            }
+            reloadSavedBatch(server, context, patches, index + 1);
+        }));
     }
 
     private static void handleRecipeDelete(RecipeEditDeletePayload payload, IPayloadContext context) {
@@ -48,7 +107,9 @@ final class NeoForge121Network {
                 return;
             }
             MinecraftServer server = context.player().getServer();
-            if (server != null && !RecipeEditorPolicy.load(server).canEdit((net.minecraft.server.level.ServerPlayer) context.player(), payload.recipeId)) {
+            String policyId = FuelRecipeEditorAdapter.itemIdFromRecipeId(payload.recipeId)
+                    .map(ResourceLocation::toString).orElse(payload.recipeId);
+            if (server != null && !RecipeEditorPolicy.load(server).canEdit((net.minecraft.server.level.ServerPlayer) context.player(), policyId)) {
                 context.reply(RecipeEditResultPayload.failure("Permission or namespace policy denied", payload.recipeId));
                 return;
             }
@@ -61,7 +122,9 @@ final class NeoForge121Network {
                 return;
             }
             RecipePatch previous = RecipeEditsSavedData.get(server).patches().get(payload.recipeId);
-            RecipeEditsApplier.reset(server, payload.recipeId).whenComplete((ignored, error) -> server.execute(() -> {
+            cc.sighs.JEIEditor.editor.EditorModel baseModel = RecipeEditsSavedData.get(server)
+                    .baseModel(payload.recipeId);
+            RecipeEditsApplier.reset(server, payload.recipeId, baseModel).whenComplete((ignored, error) -> server.execute(() -> {
                 if (error != null) {
                     LOGGER.error("Failed to remove recipe edit for {}", payload.recipeId, error);
                     RecipeEditCoordinator.finish(server);
@@ -107,7 +170,7 @@ final class NeoForge121Network {
                 }
                 LOGGER.info("Received batch recipe edit request with {} patches from {}",
                         patches.size(), context.player().getName().getString());
-                applyRecipeBatch(server, context, patches, 0);
+                saveRecipeBatch(server, context, patches, 0);
             } catch (IllegalArgumentException exception) {
                 LOGGER.warn("Rejected invalid recipe edit payload from {}: {}",
                         context.player().getName().getString(), exception.getMessage());
@@ -119,6 +182,15 @@ final class NeoForge121Network {
 
     private static String validatePatch(MinecraftServer server, net.minecraft.server.level.ServerPlayer player,
                                         RecipePatch patch) {
+        if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
+            String policyId = FuelRecipeEditorAdapter.itemId(patch)
+                    .map(ResourceLocation::toString).orElse(patch.recipeId());
+            if (!RecipeEditorPolicy.load(server).canEdit(player, policyId)) {
+                return "Permission or namespace policy denied";
+            }
+            return RecipeEditsApplier.canApply(server, patch)
+                    ? null : "Fuel patch is stale or unsupported";
+        }
         ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
         if (recipeId == null) {
             return "Unknown recipe id";
@@ -140,8 +212,8 @@ final class NeoForge121Network {
                 : "Recipe patch is stale or unsupported";
     }
 
-    private static void applyRecipeBatch(MinecraftServer server, IPayloadContext context,
-                                         List<RecipePatch> patches, int index) {
+    private static void saveRecipeBatch(MinecraftServer server, IPayloadContext context,
+                                        List<RecipePatch> patches, int index) {
         if (index >= patches.size()) {
             RecipeEditCoordinator.finish(server);
             context.reply(RecipeEditResultPayload.success(
@@ -149,26 +221,23 @@ final class NeoForge121Network {
             return;
         }
         RecipePatch patch = patches.get(index);
-        RecipeHolder<?> beforeHolder = server.getRecipeManager()
-                .byKey(ResourceLocation.tryParse(patch.recipeId())).orElse(null);
-        cc.sighs.JEIEditor.editor.EditorModel beforeModel = beforeHolder == null ? null
-                : RecipeEditorAdapters.createModel(beforeHolder, server.registryAccess()).orElse(null);
+        cc.sighs.JEIEditor.editor.EditorModel beforeModel = RecipeEditsApplier.currentModel(server, patch);
         RecipeEditsSavedData data = RecipeEditsSavedData.get(server);
         RecipePatch previous = data.patches().get(patch.recipeId());
-        RecipeEditsApplier.apply(server, patch).whenComplete((ignored, error) -> server.execute(() -> {
+        RecipeEditsApplier.save(server, patch).whenComplete((ignored, error) -> server.execute(() -> {
             if (error != null) {
-                LOGGER.error("Failed to apply recipe edit for {}", patch.recipeId(), error);
+                LOGGER.error("Failed to save recipe edit for {}", patch.recipeId(), error);
                 RecipeEditCoordinator.finish(server);
                 context.reply(RecipeEditResultPayload.failure(
-                        "Recipe reload failed; change was not accepted", patch.recipeId()));
+                        "Recipe save failed; change was not accepted", patch.recipeId()));
                 return;
             }
             if (beforeModel != null) {
                 data.put(patch, beforeModel);
                 data.audit(context.player().getName().getString(), "SAVE", previous, patch);
             }
-            LOGGER.info("Applied recipe edit for {} and reloaded server recipes", patch.recipeId());
-            applyRecipeBatch(server, context, patches, index + 1);
+            LOGGER.info("Saved recipe edit for {}", patch.recipeId());
+            saveRecipeBatch(server, context, patches, index + 1);
         }));
     }
 
@@ -239,6 +308,18 @@ final class NeoForge121Network {
                 patches.add(new RecipePatch(recipeId, serializerId, baseFingerprint, fields));
             }
             return new RecipeEditPayload(new RecipeEditBundle(patches));
+        }
+    }
+
+    static final class RecipeReloadPayload implements CustomPacketPayload {
+        static final Type<RecipeReloadPayload> TYPE = new Type<RecipeReloadPayload>(
+                ResourceLocation.fromNamespaceAndPath(JEIEditorNeoForge121.MOD_ID, "reload_recipes"));
+        static final StreamCodec<RegistryFriendlyByteBuf, RecipeReloadPayload> STREAM_CODEC =
+                StreamCodec.of((buffer, payload) -> { }, buffer -> new RecipeReloadPayload());
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
         }
     }
 

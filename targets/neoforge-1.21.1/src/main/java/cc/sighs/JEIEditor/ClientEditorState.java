@@ -17,7 +17,9 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 /** Client-only state for the first editor interaction slice. */
 final class ClientEditorState {
@@ -36,6 +38,8 @@ final class ClientEditorState {
     private static Screen saveScreen;
     private static boolean saveRestorePending;
     private static final RecipeEditSession session = new RecipeEditSession();
+    private static final Map<String, RecipePatch> submittedSavePatches =
+            new LinkedHashMap<String, RecipePatch>();
     private static EditorModel lastModel;
     private static String lastSlotKey;
     private static IRecipeSlotsView lastRecipeSlots;
@@ -119,6 +123,15 @@ final class ClientEditorState {
         lastRecipe = null;
     }
 
+    static void clearPendingPatches(java.util.Collection<String> recipeIds) {
+        session.remove(recipeIds);
+        clearPreview();
+        lastModel = null;
+        lastSlotKey = null;
+        lastRecipeSlots = null;
+        lastRecipe = null;
+    }
+
     static void undo() {
         session.undo();
         refreshPreview();
@@ -136,6 +149,14 @@ final class ClientEditorState {
     static void markSaveSubmitted(Screen screen) {
         saveScreen = screen;
         saveRestorePending = true;
+    }
+
+    static void markSaveSubmittedPatches(List<RecipePatch> patches) {
+        if (patches != null) {
+            for (RecipePatch patch : patches) {
+                submittedSavePatches.put(patch.recipeId(), patch);
+            }
+        }
     }
 
     static Screen getSaveScreen() {
@@ -300,6 +321,16 @@ final class ClientEditorState {
         return RecipeEditorAdapters.setOutputCount(lastModel, next);
     }
 
+    static void setFuelBurnTime(EditorModel model, int burnTime) {
+        if (model == null || !FuelRecipeEditorAdapter.SERIALIZER.equals(model.serializerId())) {
+            return;
+        }
+        RecipePatch pending = getPendingPatch(model.recipeId());
+        String baseFingerprint = pending == null
+                ? model.baseFingerprint() : pending.baseFingerprint();
+        setPendingPatch(FuelRecipeEditorAdapter.setBurnTime(model, burnTime, baseFingerprint));
+    }
+
     static RecipePatch adjustExperience(float delta) {
         if (lastModel == null || !CookingRecipeEditorAdapter.supportsSerializer(lastModel.serializerId())) return null;
         float current = propertyFloat("experience", 0.0F);
@@ -326,14 +357,64 @@ final class ClientEditorState {
         // or failed. A failed request must not restore a page on a later,
         // unrelated recipe synchronization.
         clearSaveRestore();
+        if (!success) {
+            submittedSavePatches.clear();
+        }
+        if (success && message.startsWith("Saved ")) {
+            // Save persists the patch but deliberately leaves it pending so
+            // the current page still shows the blue modified state until the
+            // separate Reload action is chosen.
+            return;
+        }
         if (success) {
-            session.reset();
-            clearPreview();
+            java.util.Optional<net.minecraft.resources.ResourceLocation> resetFuel =
+                    FuelRecipeEditorAdapter.itemIdFromRecipeId(recipeId);
+            if (resetFuel.isPresent()) {
+                FuelOverrideState.remove(resetFuel.get());
+                JeiRecipeEditorPlugin.applyFuelReset(resetFuel.get());
+            }
+            java.util.LinkedHashMap<String, RecipePatch> allKnown =
+                    new java.util.LinkedHashMap<String, RecipePatch>();
+            allKnown.putAll(submittedSavePatches);
+            for (RecipePatch patch : session.pendingPatches()) {
+                allKnown.put(patch.recipeId(), patch);
+            }
+            java.util.List<RecipePatch> submitted =
+                    new java.util.ArrayList<RecipePatch>(allKnown.values());
+            for (RecipePatch patch : submitted) {
+                if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
+                    FuelOverrideState.applyPatch(patch);
+                }
+            }
+            JeiRecipeEditorPlugin.applyFuelResult(submitted);
+            if (message.startsWith("Reloaded ")) {
+                java.util.List<String> reloaded = new java.util.ArrayList<String>();
+                for (Map.Entry<String, RecipePatch> entry : submittedSavePatches.entrySet()) {
+                    RecipePatch current = getPendingPatch(entry.getKey());
+                    if (samePatch(current, entry.getValue())) {
+                        reloaded.add(entry.getKey());
+                    }
+                }
+                session.remove(reloaded);
+                submittedSavePatches.clear();
+                clearPreview();
+            } else {
+                session.reset();
+                clearPreview();
+            }
             lastModel = null;
             lastSlotKey = null;
             lastRecipeSlots = null;
             lastRecipe = null;
         }
+    }
+
+    private static boolean samePatch(RecipePatch left, RecipePatch right) {
+        return left != null && right != null
+                && left.recipeId().equals(right.recipeId())
+                && left.serializerId().equals(right.serializerId())
+                && left.baseFingerprint().equals(right.baseFingerprint())
+                && left.fields().equals(right.fields());
     }
 
     static boolean isRecipeScreen(Screen screen) {

@@ -50,8 +50,7 @@ final class CraftingSlotMapper {
         // the JEI position as the semantic key so empty cells in the third
         // column/row remain editable. Older saved models may still contain a
         // compact list; those continue through the compatibility path below.
-        if ("minecraft:crafting_shaped".equals(model.serializerId())
-                && hasInputSlot(model, "input.8")) {
+        if (isCrafting(model) && hasInputSlot(model, "input.8")) {
             int gridIndex = visualGridIndex(slots, target, 3, 3);
             return gridIndex >= 0 && gridIndex < 9 && hasInputSlot(model, "input." + gridIndex)
                     ? "input." + gridIndex

@@ -20,6 +20,8 @@ import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.item.crafting.ShapelessRecipe;
 import net.minecraft.world.item.crafting.AbstractCookingRecipe;
 import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -36,7 +38,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
 import com.google.gson.JsonParser;
 
-/** Converts accepted simple crafting patches into a world datapack and reloads recipes. */
+/** Persists accepted recipe patches and performs targeted recipe synchronization. */
 final class RecipeEditsApplier {
     private static final String PACK_DESCRIPTION = "JEI Editor recipe overrides";
 
@@ -44,6 +46,9 @@ final class RecipeEditsApplier {
     }
 
     static boolean canApply(MinecraftServer server, RecipePatch patch) {
+        if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
+            return canApplyFuel(server, patch);
+        }
         ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
         if (recipeId == null) {
             return false;
@@ -57,6 +62,9 @@ final class RecipeEditsApplier {
     }
 
     static CompletableFuture<Void> apply(MinecraftServer server, RecipePatch patch) {
+        if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
+            return applyFuel(server, patch);
+        }
         try {
             ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
             if (recipeId == null) {
@@ -84,7 +92,71 @@ final class RecipeEditsApplier {
         }
     }
 
+    /** Saves a patch to the generated datapack without changing live recipes. */
+    static CompletableFuture<Void> save(MinecraftServer server, RecipePatch patch) {
+        if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
+            return saveFuel(server, patch);
+        }
+        try {
+            ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
+            if (recipeId == null) {
+                throw new IOException("invalid recipe id: " + patch.recipeId());
+            }
+            RecipeHolder<?> holder = server.getRecipeManager().byKey(recipeId).orElse(null);
+            if (holder == null) {
+                throw new IOException("recipe does not exist: " + patch.recipeId());
+            }
+            Optional<EditorModel> model = RecipeEditorAdapters.createModel(holder, server.registryAccess());
+            Optional<JsonObject> json = model.flatMap(value -> createRecipeJson(holder, patch, server.registryAccess(), value));
+            if (!json.isPresent()) {
+                throw new IOException("recipe patch is stale or unsupported: " + patch.recipeId());
+            }
+            Path recipePath = recipePath(server, recipeId);
+            Files.createDirectories(recipePath.getParent());
+            ensurePackMetadata(server);
+            ensureGeneratedPackSelected(server);
+            writeAtomically(recipePath, json.get().toString().getBytes(StandardCharsets.UTF_8));
+            return CompletableFuture.completedFuture(null);
+        } catch (IOException | RuntimeException exception) {
+            return failedFuture(exception);
+        }
+    }
+
+    /** Applies one already-saved patch to the live recipe manager only. */
+    static CompletableFuture<Void> reloadSaved(MinecraftServer server, RecipePatch patch) {
+        if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
+            Optional<ResourceLocation> itemId = FuelRecipeEditorAdapter.itemId(patch);
+            int burnTime = FuelRecipeEditorAdapter.burnTime(patch);
+            if (!itemId.isPresent() || burnTime < 1) {
+                return failedFuture(new IOException("saved fuel patch is invalid: " + patch.recipeId()));
+            }
+            FuelOverrideState.set(itemId.get(), burnTime);
+            return CompletableFuture.completedFuture(null);
+        }
+        try {
+            ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
+            if (recipeId == null) {
+                throw new IOException("invalid recipe id: " + patch.recipeId());
+            }
+            Path path = recipePath(server, recipeId);
+            if (Files.notExists(path)) {
+                throw new IOException("saved recipe file does not exist: " + patch.recipeId());
+            }
+            reloadRecipe(server, recipeId, path);
+            return CompletableFuture.completedFuture(null);
+        } catch (IOException | RuntimeException exception) {
+            return failedFuture(exception);
+        }
+    }
+
     static CompletableFuture<Void> reset(MinecraftServer server, String recipeIdText) {
+        return reset(server, recipeIdText, null);
+    }
+
+    static CompletableFuture<Void> reset(MinecraftServer server, String recipeIdText, EditorModel baseModel) {
+        if (FuelRecipeEditorAdapter.itemIdFromRecipeId(recipeIdText).isPresent()) {
+            return resetFuel(server, recipeIdText, baseModel);
+        }
         try {
             ResourceLocation recipeId = ResourceLocation.tryParse(recipeIdText);
             if (recipeId == null) {
@@ -100,6 +172,144 @@ final class RecipeEditsApplier {
             return reloadWithRollback(server, recipeId, recipePath, existed, previous);
         } catch (IOException | RuntimeException exception) {
             return failedFuture(exception);
+        }
+    }
+
+    /** Resolves the current model for either a normal recipe or a synthetic fuel entry. */
+    static EditorModel currentModel(MinecraftServer server, RecipePatch patch) {
+        if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
+            Optional<ResourceLocation> itemId = FuelRecipeEditorAdapter.itemId(patch);
+            if (!itemId.isPresent()) {
+                return null;
+            }
+            Item item = BuiltInRegistries.ITEM.get(itemId.get());
+            RecipePatch savedPatch = RecipeEditsSavedData.get(server).patches().get(patch.recipeId());
+            int burnTime = savedPatch != null ? FuelRecipeEditorAdapter.burnTime(savedPatch)
+                    : new ItemStack(item).getBurnTime(null);
+            return FuelRecipeEditorAdapter.createModel(itemId.get(), burnTime);
+        }
+        ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
+        if (recipeId == null) {
+            return null;
+        }
+        RecipeHolder<?> holder = server.getRecipeManager().byKey(recipeId).orElse(null);
+        return holder == null ? null
+                : RecipeEditorAdapters.createModel(holder, server.registryAccess()).orElse(null);
+    }
+
+    private static boolean canApplyFuel(MinecraftServer server, RecipePatch patch) {
+        if (!FuelRecipeEditorAdapter.itemIdFromRecipeId(patch.recipeId()).isPresent()) {
+            return false;
+        }
+        Optional<ResourceLocation> itemId = FuelRecipeEditorAdapter.itemId(patch);
+        if (!itemId.isPresent()) {
+            return false;
+        }
+        ResourceLocation encoded = FuelRecipeEditorAdapter.itemIdFromRecipeId(patch.recipeId()).get();
+        if (!encoded.equals(itemId.get())) {
+            return false;
+        }
+        int burnTime = FuelRecipeEditorAdapter.burnTime(patch);
+        if (burnTime < 1 || burnTime > 2_000_000_000) {
+            return false;
+        }
+        if (!BuiltInRegistries.ITEM.containsKey(itemId.get())) {
+            return false;
+        }
+        EditorModel model = currentModel(server, patch);
+        return model != null && model.baseFingerprint().equals(patch.baseFingerprint());
+    }
+
+    private static CompletableFuture<Void> applyFuel(MinecraftServer server, RecipePatch patch) {
+        return saveFuel(server, patch).thenCompose(ignored -> reloadSaved(server, patch));
+    }
+
+    private static CompletableFuture<Void> saveFuel(MinecraftServer server, RecipePatch patch) {
+        try {
+            if (!canApplyFuel(server, patch)) {
+                throw new IOException("recipe patch is stale or unsupported: " + patch.recipeId());
+            }
+            ResourceLocation itemId = FuelRecipeEditorAdapter.itemId(patch).get();
+            int burnTime = FuelRecipeEditorAdapter.burnTime(patch);
+            Path path = fuelDataMapPath(server);
+            ensurePackMetadata(server);
+            ensureGeneratedPackSelected(server);
+            writeFuelValue(path, itemId, burnTime);
+            return CompletableFuture.completedFuture(null);
+        } catch (IOException | RuntimeException exception) {
+            return failedFuture(exception);
+        }
+    }
+
+    private static CompletableFuture<Void> resetFuel(MinecraftServer server, String recipeIdText,
+                                                     EditorModel baseModel) {
+        try {
+            ResourceLocation itemId = FuelRecipeEditorAdapter.itemIdFromRecipeId(recipeIdText).get();
+            removeFuelValue(fuelDataMapPath(server), itemId);
+            FuelOverrideState.remove(itemId);
+            if (baseModel != null && FuelRecipeEditorAdapter.SERIALIZER.equals(baseModel.serializerId())) {
+                int originalBurnTime;
+                try {
+                    originalBurnTime = Integer.parseInt(baseModel.properties().get("burn_time"));
+                } catch (RuntimeException exception) {
+                    originalBurnTime = 0;
+                }
+                // Keep the live server correct even when the generated pack
+                // was loaded before the reset and its data map is still cached.
+                FuelOverrideState.set(itemId, Math.max(0, originalBurnTime));
+            }
+            return CompletableFuture.completedFuture(null);
+        } catch (IOException | RuntimeException exception) {
+            return failedFuture(exception);
+        }
+    }
+
+    private static Path fuelDataMapPath(MinecraftServer server) {
+        return packRoot(server).resolve("data").resolve("neoforge")
+                .resolve("data_maps").resolve("item").resolve("furnace_fuels.json");
+    }
+
+    private static void writeFuelValue(Path path, ResourceLocation itemId, int burnTime) throws IOException {
+        JsonObject root = readJsonObject(path);
+        JsonObject values = root.has("values") && root.get("values").isJsonObject()
+                ? root.getAsJsonObject("values") : new JsonObject();
+        JsonObject value = new JsonObject();
+        value.addProperty("burn_time", burnTime);
+        values.add(itemId.toString(), value);
+        root.add("values", values);
+        Files.createDirectories(path.getParent());
+        writeAtomically(path, root.toString().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void removeFuelValue(Path path, ResourceLocation itemId) throws IOException {
+        if (Files.notExists(path)) {
+            return;
+        }
+        JsonObject root = readJsonObject(path);
+        if (!root.has("values") || !root.get("values").isJsonObject()) {
+            return;
+        }
+        JsonObject values = root.getAsJsonObject("values");
+        values.remove(itemId.toString());
+        if (values.size() == 0 && !root.has("remove")) {
+            Files.deleteIfExists(path);
+            pruneEmptyParents(path.getParent());
+        } else {
+            root.add("values", values);
+            writeAtomically(path, root.toString().getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private static JsonObject readJsonObject(Path path) throws IOException {
+        if (Files.notExists(path)) {
+            return new JsonObject();
+        }
+        try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            JsonElement element = JsonParser.parseReader(reader);
+            if (!element.isJsonObject()) {
+                throw new IOException("fuel data map is not a JSON object");
+            }
+            return element.getAsJsonObject();
         }
     }
 
@@ -310,10 +520,12 @@ final class RecipeEditsApplier {
             recipe.addProperty("category", shapeless.category().getSerializedName());
             JsonArray ingredients = new JsonArray();
             for (EditorIngredient ingredient : inputs) {
-                if (ingredient == null) {
-                    return Optional.empty();
+                if (ingredient != null) {
+                    ingredients.add(ingredientJson(ingredient));
                 }
-                ingredients.add(ingredientJson(ingredient));
+            }
+            if (ingredients.size() == 0) {
+                return Optional.empty();
             }
             recipe.add("ingredients", ingredients);
         } else if (holder.value() instanceof AbstractCookingRecipe) {
@@ -380,7 +592,7 @@ final class RecipeEditsApplier {
                 continue;
             }
             EditorSlot slot = slots.get(key.substring(0, separator));
-            if (slot == null && "minecraft:crafting_shaped".equals(model.serializerId())
+            if (slot == null && isCraftingGridSerializer(model.serializerId())
                     && isGridInputKey(key.substring(0, separator))) {
                 slot = new EditorSlot(key.substring(0, separator), "input", null);
             }
@@ -560,6 +772,11 @@ final class RecipeEditsApplier {
     private static boolean isGridInputKey(String key) {
         int index = inputIndex(key);
         return index >= 0 && index < 9;
+    }
+
+    private static boolean isCraftingGridSerializer(String serializerId) {
+        return "minecraft:crafting_shaped".equals(serializerId)
+                || "minecraft:crafting_shapeless".equals(serializerId);
     }
 
     private static JsonObject ingredientJson(EditorIngredient ingredient) {

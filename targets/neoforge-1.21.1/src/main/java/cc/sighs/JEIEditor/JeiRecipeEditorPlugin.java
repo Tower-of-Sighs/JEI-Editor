@@ -10,7 +10,11 @@ import mezz.jei.api.registration.IGuiHandlerRegistration;
 import mezz.jei.api.recipe.RecipeIngredientRole;
 import mezz.jei.api.recipe.category.IRecipeCategory;
 import mezz.jei.api.gui.ingredient.IRecipeSlotsView;
+import mezz.jei.api.constants.RecipeTypes;
+import mezz.jei.api.recipe.vanilla.IJeiFuelingRecipe;
 import mezz.jei.gui.recipes.RecipesGui;
+import mezz.jei.common.Internal;
+import mezz.jei.library.plugins.vanilla.cooking.fuel.FuelingRecipe;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.Rect2i;
@@ -24,9 +28,12 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.HashMap;
+import java.util.Map;
 
 @JeiPlugin
 public final class JeiRecipeEditorPlugin implements IModPlugin {
+    private static final Map<String, Integer> fuelPreviewTimes = new HashMap<String, Integer>();
     @Override
     public ResourceLocation getPluginUid() {
         return ResourceLocation.fromNamespaceAndPath(JEIEditorNeoForge121.MOD_ID, "jei_plugin");
@@ -64,7 +71,8 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             return false;
         }
         Optional<RecipeTarget> target = resolveTarget(gui, mouseX, mouseY);
-        if (!target.isPresent() || !"output".equals(target.get().slotKey)) {
+        if (!target.isPresent() || FuelRecipeEditorAdapter.SERIALIZER.equals(target.get().model.serializerId())
+                || !"output".equals(target.get().slotKey)) {
             return false;
         }
         ClientEditorState.rememberTarget(target.get().model, target.get().slotKey, target.get().slots,
@@ -136,6 +144,7 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         ClientEditorState.beginPreviewRefresh();
         List<RecipePatch> patches = ClientEditorState.getPendingPatches();
         if (patches.isEmpty()) {
+            fuelPreviewTimes.clear();
             return;
         }
         for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
@@ -145,6 +154,7 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             if (patch == null) {
                 continue;
             }
+            ensureFuelPreview(displayedRecipe, patch);
             Optional<EditorModel> model = resolveModel(displayedRecipe,
                     layout.getRecipeLayout().getRecipeCategory());
             if (model.isPresent()) {
@@ -157,10 +167,15 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
 
     private static boolean isPatchedSlot(RecipePatch patch, String slotKey) {
         return slotKey != null && (patch.fields().containsKey(slotKey + ".item")
-                || patch.fields().containsKey(slotKey + ".count"));
+                || patch.fields().containsKey(slotKey + ".count")
+                || (FuelRecipeEditorAdapter.isFuelPatch(patch) && "input.0".equals(slotKey)));
     }
 
     private static boolean matchesRecipe(Object displayedRecipe, IRecipeCategory<?> category, String recipeId) {
+        if (FuelRecipeEditorAdapter.isFuelRecipe(displayedRecipe)) {
+            Optional<EditorModel> model = RecipeEditorAdapters.createFuelModel(displayedRecipe);
+            return model.isPresent() && model.get().recipeId().equals(recipeId);
+        }
         Optional<ResourceLocation> categoryId = JeiRecipeIntrospection.recipeId(category, displayedRecipe);
         if (categoryId.isPresent()) {
             return categoryId.get().toString().equals(recipeId);
@@ -216,6 +231,10 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             ClientEditorState.setLastDrop("No client level available");
             return Optional.empty();
         }
+        Optional<EditorModel> fuelModel = RecipeEditorAdapters.createFuelModel(displayedRecipe);
+        if (fuelModel.isPresent()) {
+            return fuelModel;
+        }
         if (category != null && !JeiRecipeIntrospection.isHandled(category, displayedRecipe)) {
             return Optional.empty();
         }
@@ -254,6 +273,13 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             if (!model.isPresent()) {
                 continue;
             }
+            // Fuel entries are generated from the item registry rather than
+            // recipe JSON. Their editable operation is burn-time scrolling;
+            // dragging a different item would require changing the synthetic
+            // identity and is intentionally not offered as a ghost target.
+            if (FuelRecipeEditorAdapter.SERIALIZER.equals(model.get().serializerId())) {
+                continue;
+            }
             IRecipeSlotsView slots = layout.getRecipeLayout().getRecipeSlotsView();
             for (mezz.jei.api.gui.ingredient.IRecipeSlotView view : slots.getSlotViews()) {
                 if ((view.getRole() != RecipeIngredientRole.INPUT
@@ -281,6 +307,113 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
     /** Returns every layout currently shown by JEI through the compatibility boundary. */
     private static List<mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?>> visibleRecipeLayouts(RecipesGui gui) {
         return JeiRecipeIntrospection.visibleLayouts(gui);
+    }
+
+    static Set<String> currentPageRecipeIds(RecipesGui gui) {
+        Set<String> result = new HashSet<String>();
+        for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
+            Optional<EditorModel> model = resolveModel(layout.getRecipeLayout().getRecipe(),
+                    layout.getRecipeLayout().getRecipeCategory());
+            model.ifPresent(value -> result.add(value.recipeId()));
+        }
+        return result;
+    }
+
+    /** Replace a generated JEI fuel entry with the locally edited burn time. */
+    private static void ensureFuelPreview(Object displayedRecipe, RecipePatch patch) {
+        if (!(displayedRecipe instanceof IJeiFuelingRecipe) || !FuelRecipeEditorAdapter.isFuelPatch(patch)) {
+            return;
+        }
+        int burnTime = FuelRecipeEditorAdapter.burnTime(patch);
+        if (burnTime < 1) {
+            return;
+        }
+        IJeiFuelingRecipe current = (IJeiFuelingRecipe) displayedRecipe;
+        if (current.getBurnTime() == burnTime) {
+            fuelPreviewTimes.put(patch.recipeId(), Integer.valueOf(burnTime));
+            return;
+        }
+        Integer applied = fuelPreviewTimes.get(patch.recipeId());
+        if (applied != null && applied.intValue() == burnTime) {
+            return;
+        }
+        Optional<mezz.jei.api.runtime.IJeiRuntime> runtime = Internal.getOptionalJeiRuntime();
+        if (!runtime.isPresent()) {
+            return;
+        }
+        ResourceLocation itemId = FuelRecipeEditorAdapter.itemId(patch).orElse(null);
+        if (itemId == null || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(itemId)) {
+            return;
+        }
+        ItemStack item = new ItemStack(net.minecraft.core.registries.BuiltInRegistries.ITEM.get(itemId));
+        runtime.get().getRecipeManager().hideRecipes(RecipeTypes.FUELING,
+                java.util.Collections.singletonList(current));
+        runtime.get().getRecipeManager().addRecipes(RecipeTypes.FUELING,
+                java.util.Collections.<IJeiFuelingRecipe>singletonList(
+                        new FuelingRecipe(java.util.Collections.singletonList(item), burnTime)));
+        fuelPreviewTimes.put(patch.recipeId(), Integer.valueOf(burnTime));
+    }
+
+    /** Applies a saved/reset fuel value to JEI's generated fuel list. */
+    static void applyFuelResult(List<RecipePatch> submitted) {
+        if (submitted == null) {
+            return;
+        }
+        Optional<mezz.jei.api.runtime.IJeiRuntime> runtime = Internal.getOptionalJeiRuntime();
+        if (!runtime.isPresent()) {
+            return;
+        }
+        for (RecipePatch patch : submitted) {
+            if (!FuelRecipeEditorAdapter.isFuelPatch(patch)) {
+                continue;
+            }
+            FuelOverrideState.get(FuelRecipeEditorAdapter.itemId(patch).orElse(null)).ifPresent(value ->
+                    replaceFuelRecipes(runtime.get(), FuelRecipeEditorAdapter.itemId(patch).get(), value.intValue()));
+        }
+    }
+
+    static void applyFuelReset(ResourceLocation itemId) {
+        Optional<mezz.jei.api.runtime.IJeiRuntime> runtime = Internal.getOptionalJeiRuntime();
+        if (!runtime.isPresent() || itemId == null
+                || !net.minecraft.core.registries.BuiltInRegistries.ITEM.containsKey(itemId)) {
+            return;
+        }
+        ItemStack stack = new ItemStack(net.minecraft.core.registries.BuiltInRegistries.ITEM.get(itemId));
+        int burnTime = stack.getBurnTime(null);
+        if (burnTime > 0) {
+            replaceFuelRecipes(runtime.get(), itemId, burnTime);
+        } else {
+            hideFuelRecipes(runtime.get(), itemId);
+        }
+    }
+
+    private static void hideFuelRecipes(mezz.jei.api.runtime.IJeiRuntime runtime, ResourceLocation itemId) {
+        List<IJeiFuelingRecipe> matches = runtime.getRecipeManager()
+                .createRecipeLookup(RecipeTypes.FUELING).includeHidden().get()
+                .filter(recipe -> recipe.getInputs().size() == 1
+                        && itemId.equals(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(
+                        recipe.getInputs().get(0).getItem())))
+                .collect(java.util.stream.Collectors.toList());
+        if (!matches.isEmpty()) {
+            runtime.getRecipeManager().hideRecipes(RecipeTypes.FUELING, matches);
+        }
+    }
+
+    private static void replaceFuelRecipes(mezz.jei.api.runtime.IJeiRuntime runtime,
+                                           ResourceLocation itemId, int burnTime) {
+        List<IJeiFuelingRecipe> matches = runtime.getRecipeManager()
+                .createRecipeLookup(RecipeTypes.FUELING).includeHidden().get()
+                .filter(recipe -> recipe.getInputs().size() == 1
+                        && itemId.equals(net.minecraft.core.registries.BuiltInRegistries.ITEM.getKey(
+                        recipe.getInputs().get(0).getItem())))
+                .collect(java.util.stream.Collectors.toList());
+        if (!matches.isEmpty()) {
+            runtime.getRecipeManager().hideRecipes(RecipeTypes.FUELING, matches);
+            runtime.getRecipeManager().addRecipes(RecipeTypes.FUELING,
+                    java.util.Collections.<IJeiFuelingRecipe>singletonList(new FuelingRecipe(
+                            java.util.Collections.singletonList(new ItemStack(
+                                    net.minecraft.core.registries.BuiltInRegistries.ITEM.get(itemId))), burnTime)));
+        }
     }
 
     private static final class RecipeTarget {

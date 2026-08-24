@@ -41,9 +41,13 @@ final class RecipeEditorCommands {
             Path file = filePath(server, name); if (Files.notExists(file) || Files.size(file) > MAX_FILE_BYTES) throw new IOException("file is missing or too large");
             List<RecipePatch> patches = RecipeEditBundleCodec.decode(new String(Files.readAllBytes(file), StandardCharsets.UTF_8)).patches();
             for (RecipePatch patch : patches) {
-                if (!RecipeEditorPolicy.load(server).canEdit(source, patch.recipeId())) throw new IOException("permission or namespace policy denied: " + patch.recipeId());
+                String policyId = FuelRecipeEditorAdapter.itemId(patch).map(ResourceLocation::toString)
+                        .orElse(patch.recipeId());
+                if (!RecipeEditorPolicy.load(server).canEdit(source, policyId)) throw new IOException("permission or namespace policy denied: " + patch.recipeId());
                 ResourceLocation id = ResourceLocation.tryParse(patch.recipeId()); RecipeHolder<?> holder = id == null ? null : server.getRecipeManager().byKey(id).orElse(null);
-                if (holder == null || !RecipeEditorAdapters.createModel(holder, server.registryAccess()).isPresent() || !RecipeEditsApplier.canApply(server, patch)) throw new IOException("stale or unsupported patch: " + patch.recipeId());
+                if ((!FuelRecipeEditorAdapter.isFuelPatch(patch)
+                        && (holder == null || !RecipeEditorAdapters.createModel(holder, server.registryAccess()).isPresent()))
+                        || !RecipeEditsApplier.canApply(server, patch)) throw new IOException("stale or unsupported patch: " + patch.recipeId());
             }
             if (patches.isEmpty()) { source.sendSuccess(() -> Component.literal("Import contained no recipe edits"), false); return 1; }
             if (!RecipeEditCoordinator.tryBegin(server)) throw new IOException("another recipe reload is in progress");

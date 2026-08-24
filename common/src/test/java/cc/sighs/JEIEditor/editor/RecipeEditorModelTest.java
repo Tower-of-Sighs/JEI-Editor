@@ -98,6 +98,18 @@ class RecipeEditorModelTest {
     }
 
     @Test
+    void editSessionCanResetOnlyTheCurrentPage() {
+        RecipeEditSession session = new RecipeEditSession();
+        session.apply(patchForRecipe("minecraft:iron_recipe", "minecraft:iron_ingot"));
+        session.apply(patchForRecipe("minecraft:gold_recipe", "minecraft:gold_ingot"));
+
+        session.remove(java.util.Collections.singleton("minecraft:gold_recipe"));
+
+        assertEquals(1, session.pendingPatches().size());
+        assertEquals("minecraft:iron_recipe", session.pending().recipeId());
+    }
+
+    @Test
     void editorModelKeepsStablePropertiesImmutable() {
         Map<String, String> properties = new LinkedHashMap<String, String>();
         properties.put("cooking_time", "200");

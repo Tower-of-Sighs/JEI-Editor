@@ -2,6 +2,8 @@ package cc.sighs.JEIEditor;
 
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
 import mezz.jei.api.gui.ingredient.IRecipeSlotDrawable;
+import mezz.jei.api.gui.widgets.ITextWidget;
+import mezz.jei.api.gui.widgets.IRecipeWidget;
 import mezz.jei.api.ingredients.ITypedIngredient;
 import mezz.jei.api.recipe.category.IRecipeCategory;
 import mezz.jei.api.recipe.IRecipeManager;
@@ -15,6 +17,7 @@ import mezz.jei.gui.recipes.RecipeGuiLayouts;
 import mezz.jei.gui.recipes.RecipesGui;
 import net.minecraft.client.renderer.Rect2i;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.navigation.ScreenPosition;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.RecipeHolder;
@@ -25,7 +28,9 @@ import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.WeakHashMap;
 
 /**
  * Compatibility boundary for JEI 19.44's internal recipe GUI state.
@@ -41,7 +46,11 @@ final class JeiRecipeIntrospection {
     private static Field recipesGuiLogicField;
     private static Field recipesGuiBookmarksField;
     private static Field borderPaddingField;
+    private static Field recipeLayoutWidgetsField;
     private static Method recipeLayoutsAreaMethod;
+    private static Method ensureRecipeExtrasMethod;
+    private static final Map<ITextWidget, ScreenPosition> hiddenRecipeTextPositions =
+            new WeakHashMap<ITextWidget, ScreenPosition>();
 
     private JeiRecipeIntrospection() {
     }
@@ -95,6 +104,101 @@ final class JeiRecipeIntrospection {
 
     static Optional<ItemStack> itemStack(ITypedIngredient<?> ingredient) {
         return ingredient == null ? Optional.<ItemStack>empty() : ingredient.getItemStack();
+    }
+
+    /** Temporarily moves JEI text widgets out of a recipe layout while a
+     * client-side editor draws an interactive replacement in the same area. */
+    static void setRecipeTextVisible(IRecipeLayoutDrawable<?> layout, boolean visible) {
+        if (layout == null) {
+            return;
+        }
+        try {
+            Method ensureExtras = ensureRecipeExtrasMethod;
+            if (ensureExtras == null || !ensureExtras.getDeclaringClass().isInstance(layout)) {
+                ensureExtras = layout.getClass().getMethod("ensureRecipeExtrasAreCreated");
+                ensureExtras.setAccessible(true);
+                ensureRecipeExtrasMethod = ensureExtras;
+            }
+            ensureExtras.invoke(layout);
+
+            Field widgetsField = recipeLayoutWidgetsField;
+            if (widgetsField == null || !widgetsField.getDeclaringClass().isInstance(layout)) {
+                widgetsField = findNamedField(layout.getClass(), "allWidgets", List.class);
+                recipeLayoutWidgetsField = widgetsField;
+            }
+            if (widgetsField == null) {
+                return;
+            }
+            Object widgets = widgetsField.get(layout);
+            if (!(widgets instanceof List<?>)) {
+                return;
+            }
+            for (Object widget : (List<?>) widgets) {
+                if (!(widget instanceof ITextWidget) || !(widget instanceof IRecipeWidget)) {
+                    continue;
+                }
+                ITextWidget text = (ITextWidget) widget;
+                if (visible) {
+                    ScreenPosition original = hiddenRecipeTextPositions.remove(text);
+                    if (original != null) {
+                        text.setPosition(original.x(), original.y());
+                    }
+                } else if (!hiddenRecipeTextPositions.containsKey(text)) {
+                    hiddenRecipeTextPositions.put(text, ((IRecipeWidget) text).getPosition());
+                    text.setPosition(-10000, -10000);
+                }
+            }
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
+            // JEI internals are optional here; failing closed leaves its
+            // original text visible instead of breaking the recipe page.
+        }
+    }
+
+    static Optional<ScreenPosition> firstRecipeTextPosition(IRecipeLayoutDrawable<?> layout) {
+        if (layout == null) {
+            return Optional.empty();
+        }
+        try {
+            Method ensureExtras = ensureRecipeExtrasMethod;
+            if (ensureExtras == null || !ensureExtras.getDeclaringClass().isInstance(layout)) {
+                ensureExtras = layout.getClass().getMethod("ensureRecipeExtrasAreCreated");
+                ensureExtras.setAccessible(true);
+                ensureRecipeExtrasMethod = ensureExtras;
+            }
+            ensureExtras.invoke(layout);
+            Field widgetsField = recipeLayoutWidgetsField;
+            if (widgetsField == null || !widgetsField.getDeclaringClass().isInstance(layout)) {
+                widgetsField = findNamedField(layout.getClass(), "allWidgets", List.class);
+                recipeLayoutWidgetsField = widgetsField;
+            }
+            if (widgetsField == null) {
+                return Optional.empty();
+            }
+            Object widgets = widgetsField.get(layout);
+            if (!(widgets instanceof List<?>)) {
+                return Optional.empty();
+            }
+            for (Object widget : (List<?>) widgets) {
+                if (widget instanceof ITextWidget && widget instanceof IRecipeWidget) {
+                    return Optional.of(((IRecipeWidget) widget).getPosition());
+                }
+            }
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
+            // Keep the editor usable if JEI changes its private widget list.
+        }
+        return Optional.empty();
+    }
+
+    static void restoreHiddenRecipeText() {
+        for (Map.Entry<ITextWidget, ScreenPosition> entry :
+                new ArrayList<Map.Entry<ITextWidget, ScreenPosition>>(hiddenRecipeTextPositions.entrySet())) {
+            ITextWidget widget = entry.getKey();
+            ScreenPosition position = entry.getValue();
+            if (widget != null && position != null) {
+                widget.setPosition(position.x(), position.y());
+            }
+        }
+        hiddenRecipeTextPositions.clear();
     }
 
     /** Returns true when JEI owns this point through a sidebar or exclusion area. */
@@ -275,6 +379,23 @@ final class JeiRecipeIntrospection {
                 field.setAccessible(true);
                 return field;
             }
+        }
+        return null;
+    }
+
+    private static Field findNamedField(Class<?> type, String name, Class<?> fieldType) {
+        Class<?> current = type;
+        while (current != null) {
+            try {
+                Field field = current.getDeclaredField(name);
+                if (fieldType.isAssignableFrom(field.getType())) {
+                    field.setAccessible(true);
+                    return field;
+                }
+            } catch (NoSuchFieldException ignored) {
+                // Continue through the implementation hierarchy.
+            }
+            current = current.getSuperclass();
         }
         return null;
     }

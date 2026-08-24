@@ -21,6 +21,8 @@ public final class ClientEditorEvents {
             new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
     private static final Map<net.minecraft.client.gui.screens.Screen, Button> saveButtons =
             new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
+    private static final Map<net.minecraft.client.gui.screens.Screen, Button> reloadButtons =
+            new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
     private static final Map<net.minecraft.client.gui.screens.Screen, Button> resetButtons =
             new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
     private static final Map<net.minecraft.client.gui.screens.Screen, Boolean> initializedRecipeScreens =
@@ -54,6 +56,11 @@ public final class ClientEditorEvents {
     /** Re-arm the edit switch after the physical left mouse button is released. */
     @SubscribeEvent
     public static void onMouseButtonReleased(ScreenEvent.MouseButtonReleased.Pre event) {
+        if (event.getButton() == 0 && event.getScreen() instanceof RecipesGui
+                && FuelCountInputController.isMouseOver((RecipesGui) event.getScreen(),
+                event.getMouseX(), event.getMouseY())) {
+            event.setCanceled(true);
+        }
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
             if (event.getButton() == 0
                     && buttonUnderMouse(event.getScreen(), event.getMouseX(), event.getMouseY()) != null) {
@@ -75,6 +82,14 @@ public final class ClientEditorEvents {
     /** Handle editor buttons before JEI's input router, then keep other edits mouse-only. */
     @SubscribeEvent
     public static void onMouseButton(ScreenEvent.MouseButtonPressed.Pre event) {
+        if (event.getButton() == 0 && event.getScreen() instanceof RecipesGui
+                && ClientEditorState.isEditing()
+                && FuelCountInputController.mouseClicked((RecipesGui) event.getScreen(),
+                event.getMouseX(), event.getMouseY(), event.getButton())) {
+            closeMenu(event.getScreen());
+            event.setCanceled(true);
+            return;
+        }
         if (event.getButton() == 0 && ClientEditorState.isRecipeScreen(event.getScreen())) {
             Button button = buttonUnderMouse(event.getScreen(), event.getMouseX(), event.getMouseY());
             if (button != null) {
@@ -148,6 +163,24 @@ public final class ClientEditorEvents {
         }
     }
 
+    @SubscribeEvent
+    public static void onKeyPressed(ScreenEvent.KeyPressed.Pre event) {
+        if (event.getScreen() instanceof RecipesGui
+                && FuelCountInputController.keyPressed((RecipesGui) event.getScreen(),
+                event.getKeyCode(), event.getScanCode(), event.getModifiers())) {
+            event.setCanceled(true);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onCharacterTyped(ScreenEvent.CharacterTyped.Pre event) {
+        if (event.getScreen() instanceof RecipesGui
+                && FuelCountInputController.charTyped((RecipesGui) event.getScreen(),
+                event.getCodePoint(), event.getModifiers())) {
+            event.setCanceled(true);
+        }
+    }
+
     private static Component label() {
         return Component.literal(ClientEditorState.isEditing() ? "Editing: ON" : "Editing: OFF");
     }
@@ -182,6 +215,7 @@ public final class ClientEditorEvents {
     @SubscribeEvent
     public static void onScreenClosing(ScreenEvent.Closing event) {
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
+            FuelCountInputController.close((RecipesGui) event.getScreen());
             if (ClientEditorState.getSaveScreen() != null) {
                 // The close belongs to the recipe synchronization started by
                 // Save, including a transient JEI replacement screen. Keep
@@ -200,6 +234,7 @@ public final class ClientEditorEvents {
     @SubscribeEvent
     public static void onScreenRenderPre(ScreenEvent.Render.Pre event) {
         if (event.getScreen() instanceof RecipesGui) {
+            FuelCountInputController.prepare((RecipesGui) event.getScreen());
             JeiRecipeEditorPlugin.refreshPendingPreviews((RecipesGui) event.getScreen());
         }
     }
@@ -209,6 +244,8 @@ public final class ClientEditorEvents {
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
             JeiRecipeEditorPlugin.drawPendingSlotHighlights((RecipesGui) event.getScreen(), event.getGuiGraphics());
             ClientEditorState.drawGhostHighlights(event.getGuiGraphics(), event.getMouseX(), event.getMouseY());
+            FuelCountInputController.render((RecipesGui) event.getScreen(), event.getGuiGraphics(),
+                    event.getMouseX(), event.getMouseY());
             renderMenuAboveJei(event);
         }
         if (ClientEditorState.isRecipeScreen(event.getScreen()) && ClientEditorState.isEditing()) {
@@ -238,6 +275,10 @@ public final class ClientEditorEvents {
         if (save != null) {
             save.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), 0.0F);
         }
+        Button reload = reloadButtons.get(screen);
+        if (reload != null) {
+            reload.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), 0.0F);
+        }
         Button reset = resetButtons.get(screen);
         if (reset != null) {
             reset.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), 0.0F);
@@ -247,8 +288,8 @@ public final class ClientEditorEvents {
 
     private static void openMenu(RecipesGui screen, double mouseX, double mouseY) {
         closeMenu(screen);
-        int width = 92;
-        int height = 60;
+        int width = 130;
+        int height = 80;
         int x = Math.max(2, Math.min(screen.width - width - 2, (int) mouseX));
         int y = Math.max(2, Math.min(screen.height - height - 2, (int) mouseY));
         Button edit = Button.builder(label(), button -> {
@@ -261,21 +302,33 @@ public final class ClientEditorEvents {
             } else if (ClientEditorState.getPendingPatches().isEmpty()) {
                 ClientEditorState.setLastDrop("No pending recipe edit");
             } else {
-                ClientEditorState.markSaveSubmitted(screen);
-                NeoForge121Network.send(ClientEditorState.getPendingPatches());
-                ClientEditorState.setLastDrop("Recipe edits submitted");
+                java.util.List<cc.sighs.JEIEditor.editor.RecipePatch> patches =
+                        ClientEditorState.getPendingPatches();
+                ClientEditorState.markSaveSubmittedPatches(patches);
+                NeoForge121Network.send(patches);
+                ClientEditorState.setLastDrop("Recipe edits saved; reload separately to apply");
             }
-            // Keep the current recipe page and context menu visible after the
-            // request is sent. The result message can arrive asynchronously,
-            // and the user may continue inspecting the same recipe meanwhile.
         }).bounds(x, y + 20, width, 20).build();
-        Button reset = Button.builder(Component.literal("Reset"), button -> {
-            ClientEditorState.clearPendingPatch();
-            ClientEditorState.setLastDrop("Pending changes reset");
-            closeMenu(screen);
+        Button reload = Button.builder(Component.literal("Reload"), button -> {
+            if (!ClientEditorState.isEditing()) {
+                ClientEditorState.setLastDrop("Enable edit mode first");
+            } else {
+                ClientEditorState.markSaveSubmitted(screen);
+                NeoForge121Network.sendReload();
+                ClientEditorState.setLastDrop("Saved recipe edits reload submitted");
+            }
         }).bounds(x, y + 40, width, 20).build();
+        Button reset = Button.builder(Component.literal("Reset Page Changes"), button -> {
+            if (screen instanceof RecipesGui) {
+                ClientEditorState.clearPendingPatches(
+                        JeiRecipeEditorPlugin.currentPageRecipeIds((RecipesGui) screen));
+            }
+            ClientEditorState.setLastDrop("Current page changes reset");
+            closeMenu(screen);
+        }).bounds(x, y + 60, width, 20).build();
         editButtons.put(screen, edit);
         saveButtons.put(screen, save);
+        reloadButtons.put(screen, reload);
         resetButtons.put(screen, reset);
         // These controls are rendered and dispatched exclusively by the
         // editor event handlers. Keeping them out of Screen.renderables avoids
@@ -289,9 +342,11 @@ public final class ClientEditorEvents {
     private static void closeMenu(net.minecraft.client.gui.screens.Screen screen) {
         Button edit = editButtons.remove(screen);
         Button save = saveButtons.remove(screen);
+        Button reload = reloadButtons.remove(screen);
         Button reset = resetButtons.remove(screen);
         if (edit != null) screen.renderables.remove(edit);
         if (save != null) screen.renderables.remove(save);
+        if (reload != null) screen.renderables.remove(reload);
         if (reset != null) screen.renderables.remove(reset);
     }
 
@@ -304,6 +359,10 @@ public final class ClientEditorEvents {
         Button saveButton = saveButtons.get(screen);
         if (saveButton != null && saveButton.isMouseOver(mouseX, mouseY)) {
             return saveButton;
+        }
+        Button reloadButton = reloadButtons.get(screen);
+        if (reloadButton != null && reloadButton.isMouseOver(mouseX, mouseY)) {
+            return reloadButton;
         }
         Button resetButton = resetButtons.get(screen);
         if (resetButton != null && resetButton.isMouseOver(mouseX, mouseY)) {

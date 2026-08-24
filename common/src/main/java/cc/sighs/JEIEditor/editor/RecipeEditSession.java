@@ -57,6 +57,21 @@ public final class RecipeEditSession {
         redo.clear();
     }
 
+    /** Removes only the pending edits belonging to the requested page. */
+    public void remove(java.util.Collection<String> recipeIds) {
+        if (recipeIds == null || recipeIds.isEmpty()) {
+            return;
+        }
+        recordState();
+        for (String recipeId : recipeIds) {
+            pendingPatches.remove(recipeId);
+        }
+        if (activeRecipeId != null && !pendingPatches.containsKey(activeRecipeId)) {
+            activeRecipeId = pendingPatches.isEmpty()
+                    ? null : pendingPatches.keySet().iterator().next();
+        }
+    }
+
     public void undo() {
         if (undo.isEmpty()) {
             return;

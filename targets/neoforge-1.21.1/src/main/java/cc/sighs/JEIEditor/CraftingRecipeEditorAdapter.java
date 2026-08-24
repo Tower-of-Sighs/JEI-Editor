@@ -12,8 +12,10 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.crafting.Recipe;
 import net.minecraft.world.item.crafting.RecipeHolder;
+import net.minecraft.world.item.crafting.CraftingRecipe;
 import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.item.crafting.ShapelessRecipe;
+import mezz.jei.library.gui.helpers.CraftingGridHelper;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -21,6 +23,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /** Adapter for simple vanilla crafting recipes. Complex/tag ingredients remain read-only. */
@@ -67,12 +70,22 @@ final class CraftingRecipeEditorAdapter {
                 slots.add(new EditorSlot("input." + i, "input", grid.get(i)));
             }
         } else {
-            for (int i = 0; i < ingredients.size(); i++) {
-                if (!ingredients.get(i).isEmpty() && !simpleIngredient(ingredients.get(i)).isPresent()) {
+            // JEI always lays crafting inputs out in a 3x3 grid, even when a
+            // shapeless recipe only uses one or two cells. Keep all nine
+            // semantic cells editable so an empty cell can receive an item.
+            @SuppressWarnings("unchecked")
+            RecipeHolder<CraftingRecipe> craftingHolder =
+                    (RecipeHolder<CraftingRecipe>) (RecipeHolder<?>) holder;
+            Map<Integer, Ingredient> gridIngredients = CraftingGridHelper
+                    .getGuiSlotToIngredientMap(craftingHolder, 0, 0);
+            for (int gridIndex = 0; gridIndex < 9; gridIndex++) {
+                Ingredient source = gridIngredients.get(Integer.valueOf(gridIndex));
+                if (source != null && !source.isEmpty()
+                        && !simpleIngredient(source).isPresent()) {
                     return Optional.empty();
                 }
-                Optional<EditorIngredient> ingredient = simpleIngredient(ingredients.get(i));
-                slots.add(new EditorSlot("input." + i, "input", ingredient.orElse(null)));
+                slots.add(new EditorSlot("input." + gridIndex, "input",
+                        source == null ? null : simpleIngredient(source).orElse(null)));
             }
         }
 
@@ -110,8 +123,10 @@ final class CraftingRecipeEditorAdapter {
     }
 
     static RecipePatch clearSlot(EditorModel model, String slotKey) {
-        if (!"minecraft:crafting_shaped".equals(model.serializerId()) || !slotKey.startsWith("input.")) {
-            throw new IllegalArgumentException("only shaped crafting input slots can be cleared");
+        if (!("minecraft:crafting_shaped".equals(model.serializerId())
+                || "minecraft:crafting_shapeless".equals(model.serializerId()))
+                || !slotKey.startsWith("input.")) {
+            throw new IllegalArgumentException("only crafting input slots can be cleared");
         }
         LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
         fields.put(slotKey + ".item", "minecraft:air");
