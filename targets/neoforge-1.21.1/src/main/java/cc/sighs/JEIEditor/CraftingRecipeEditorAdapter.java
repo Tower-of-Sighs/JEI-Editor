@@ -26,7 +26,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-/** Adapter for simple vanilla crafting recipes. Complex/tag ingredients remain read-only. */
+/** Adapter for vanilla crafting recipes. Tag ingredients use a representative
+ * item in the client model and are preserved until that slot is edited. */
 final class CraftingRecipeEditorAdapter {
     private CraftingRecipeEditorAdapter() {
     }
@@ -56,7 +57,8 @@ final class CraftingRecipeEditorAdapter {
             }
             for (int i = 0; i < ingredients.size(); i++) {
                 Ingredient source = ingredients.get(i);
-                if (!source.isEmpty() && !simpleIngredient(source).isPresent()) {
+                if (!source.isEmpty() && !simpleIngredient(source).isPresent()
+                        && !isAirIngredient(source)) {
                     return Optional.empty();
                 }
                 int gridIndex = CraftingSlotMapper.craftingGridIndex(
@@ -81,7 +83,7 @@ final class CraftingRecipeEditorAdapter {
             for (int gridIndex = 0; gridIndex < 9; gridIndex++) {
                 Ingredient source = gridIngredients.get(Integer.valueOf(gridIndex));
                 if (source != null && !source.isEmpty()
-                        && !simpleIngredient(source).isPresent()) {
+                        && !simpleIngredient(source).isPresent() && !isAirIngredient(source)) {
                     return Optional.empty();
                 }
                 slots.add(new EditorSlot("input." + gridIndex, "input",
@@ -156,11 +158,29 @@ final class CraftingRecipeEditorAdapter {
     }
 
     private static Optional<EditorIngredient> simpleIngredient(Ingredient ingredient) {
-        if (ingredient == null || ingredient.isEmpty() || ingredient.isCustom()) {
+        if (ingredient == null || ingredient.isEmpty()) {
             return Optional.empty();
         }
         ItemStack[] items = ingredient.getItems();
-        return items.length == 1 ? simpleStack(items[0]) : Optional.<EditorIngredient>empty();
+        // JEI expands tags into their concrete stacks. Keep the first valid
+        // stack as the representative so the slot remains editable; the
+        // server-side writer retains the original tag unless this slot is
+        // explicitly changed by the user.
+        for (ItemStack item : items) {
+            Optional<EditorIngredient> value = simpleStack(item);
+            if (value.isPresent()) {
+                return value;
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static boolean isAirIngredient(Ingredient ingredient) {
+        if (ingredient == null || ingredient.isEmpty()) {
+            return false;
+        }
+        ItemStack[] items = ingredient.getItems();
+        return items.length == 1 && items[0].is(net.minecraft.world.item.Items.AIR);
     }
 
     private static Optional<EditorIngredient> simpleStack(ItemStack stack) {

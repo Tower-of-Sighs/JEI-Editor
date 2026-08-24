@@ -4,6 +4,7 @@ import cc.sighs.JEIEditor.editor.EditorIngredient;
 import cc.sighs.JEIEditor.editor.EditorModel;
 import cc.sighs.JEIEditor.editor.EditorSlot;
 import cc.sighs.JEIEditor.editor.RecipePatch;
+import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -22,6 +23,7 @@ import net.minecraft.world.item.crafting.AbstractCookingRecipe;
 import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import mezz.jei.library.gui.helpers.CraftingGridHelper;
 
 import java.io.IOException;
 import java.io.Reader;
@@ -53,9 +55,17 @@ final class RecipeEditsApplier {
         if (recipeId == null) {
             return false;
         }
+        if (RecipePatchSemantics.isCreation(patch)) {
+            return "jeieditor".equals(recipeId.getNamespace())
+                    && server.getRecipeManager().byKey(recipeId).isEmpty()
+                    && createNewRecipeJson(patch).isPresent();
+        }
         RecipeHolder<?> holder = server.getRecipeManager().byKey(recipeId).orElse(null);
         if (holder == null) {
             return false;
+        }
+        if (RecipePatchSemantics.isDeletion(patch)) {
+            return RecipeDeletionAdapter.matches(holder, patch.serializerId(), patch.baseFingerprint());
         }
         return RecipeEditorAdapters.createModel(holder, server.registryAccess())
                 .flatMap(model -> createRecipeJson(holder, patch, server.registryAccess(), model)).isPresent();
@@ -71,11 +81,12 @@ final class RecipeEditsApplier {
                 throw new IOException("invalid recipe id: " + patch.recipeId());
             }
             RecipeHolder<?> holder = server.getRecipeManager().byKey(recipeId).orElse(null);
-            if (holder == null) {
+            if (holder == null && !RecipePatchSemantics.isCreation(patch)) {
                 throw new IOException("recipe does not exist: " + patch.recipeId());
             }
-            Optional<EditorModel> model = RecipeEditorAdapters.createModel(holder, server.registryAccess());
-            Optional<JsonObject> json = model.flatMap(value -> createRecipeJson(holder, patch, server.registryAccess(), value));
+            Optional<JsonObject> json = RecipePatchSemantics.isCreation(patch)
+                    ? createNewRecipeJson(patch)
+                    : createRecipeJson(holder, patch, server.registryAccess());
             if (!json.isPresent()) {
                 throw new IOException("recipe patch is stale or unsupported: " + patch.recipeId());
             }
@@ -86,7 +97,12 @@ final class RecipeEditsApplier {
             boolean existed = Files.exists(recipePath);
             byte[] previous = existed ? Files.readAllBytes(recipePath) : null;
             writeAtomically(recipePath, json.get().toString().getBytes(StandardCharsets.UTF_8));
-            return reloadWithRollback(server, recipeId, recipePath, existed, previous);
+            if (RecipePatchSemantics.isDeletion(patch)) {
+                removeRecipe(server, recipeId);
+                return CompletableFuture.completedFuture(null);
+            }
+            return reloadWithRollback(server, recipeId, recipePath, existed, previous,
+                    RecipePatchSemantics.isCreation(patch));
         } catch (IOException | RuntimeException exception) {
             return failedFuture(exception);
         }
@@ -103,11 +119,12 @@ final class RecipeEditsApplier {
                 throw new IOException("invalid recipe id: " + patch.recipeId());
             }
             RecipeHolder<?> holder = server.getRecipeManager().byKey(recipeId).orElse(null);
-            if (holder == null) {
+            if (holder == null && !RecipePatchSemantics.isCreation(patch)) {
                 throw new IOException("recipe does not exist: " + patch.recipeId());
             }
-            Optional<EditorModel> model = RecipeEditorAdapters.createModel(holder, server.registryAccess());
-            Optional<JsonObject> json = model.flatMap(value -> createRecipeJson(holder, patch, server.registryAccess(), value));
+            Optional<JsonObject> json = RecipePatchSemantics.isCreation(patch)
+                    ? createNewRecipeJson(patch)
+                    : createRecipeJson(holder, patch, server.registryAccess());
             if (!json.isPresent()) {
                 throw new IOException("recipe patch is stale or unsupported: " + patch.recipeId());
             }
@@ -142,7 +159,14 @@ final class RecipeEditsApplier {
             if (Files.notExists(path)) {
                 throw new IOException("saved recipe file does not exist: " + patch.recipeId());
             }
-            reloadRecipe(server, recipeId, path);
+            if (RecipePatchSemantics.isDeletion(patch)) {
+                if (readRecipeJson(server, recipeId, path).size() != 0) {
+                    throw new IOException("saved deletion override is not empty: " + patch.recipeId());
+                }
+                removeRecipe(server, recipeId);
+                return CompletableFuture.completedFuture(null);
+            }
+            reloadRecipe(server, recipeId, path, RecipePatchSemantics.isCreation(patch));
             return CompletableFuture.completedFuture(null);
         } catch (IOException | RuntimeException exception) {
             return failedFuture(exception);
@@ -169,6 +193,10 @@ final class RecipeEditsApplier {
                 Files.delete(recipePath);
                 pruneEmptyParents(recipePath.getParent());
             }
+            if (RecipeCreationAdapter.isCreatedModel(baseModel)) {
+                removeRecipe(server, recipeId);
+                return CompletableFuture.completedFuture(null);
+            }
             return reloadWithRollback(server, recipeId, recipePath, existed, previous);
         } catch (IOException | RuntimeException exception) {
             return failedFuture(exception);
@@ -192,8 +220,15 @@ final class RecipeEditsApplier {
         if (recipeId == null) {
             return null;
         }
+        if (RecipePatchSemantics.isCreation(patch)) {
+            return RecipeCreationAdapter.modelFromPatch(patch);
+        }
         RecipeHolder<?> holder = server.getRecipeManager().byKey(recipeId).orElse(null);
-        return holder == null ? null
+        if (holder == null) {
+            return null;
+        }
+        return RecipePatchSemantics.isDeletion(patch)
+                ? RecipeDeletionAdapter.createModel(holder).orElse(null)
                 : RecipeEditorAdapters.createModel(holder, server.registryAccess()).orElse(null);
     }
 
@@ -352,14 +387,20 @@ final class RecipeEditsApplier {
 
     private static CompletableFuture<Void> reloadWithRollback(MinecraftServer server, ResourceLocation recipeId,
                                                                Path recipePath, boolean existed, byte[] previous) {
+        return reloadWithRollback(server, recipeId, recipePath, existed, previous, false);
+    }
+
+    private static CompletableFuture<Void> reloadWithRollback(MinecraftServer server, ResourceLocation recipeId,
+                                                               Path recipePath, boolean existed, byte[] previous,
+                                                               boolean allowAdd) {
         CompletableFuture<Void> result = new CompletableFuture<Void>();
         try {
-            reloadRecipe(server, recipeId, recipePath);
+            reloadRecipe(server, recipeId, recipePath, allowAdd);
             result.complete(null);
         } catch (IOException | RuntimeException error) {
             try {
                 restoreRecipeFile(recipePath, existed, previous);
-                reloadRecipe(server, recipeId, recipePath);
+                reloadRecipe(server, recipeId, recipePath, allowAdd);
             } catch (IOException | RuntimeException rollbackError) {
                 error.addSuppressed(rollbackError);
             }
@@ -371,7 +412,12 @@ final class RecipeEditsApplier {
     /** Replaces one recipe in the live manager and syncs the recipe collection,
      * without rebuilding unrelated server resources. */
     private static void reloadRecipe(MinecraftServer server, ResourceLocation recipeId,
-                                     Path recipePath) throws IOException {
+                                      Path recipePath) throws IOException {
+        reloadRecipe(server, recipeId, recipePath, false);
+    }
+
+    private static void reloadRecipe(MinecraftServer server, ResourceLocation recipeId,
+                                      Path recipePath, boolean allowAdd) throws IOException {
         JsonObject json = readRecipeJson(server, recipeId, recipePath);
         RecipeHolder<?> replacement = RecipeManagerParser.parse(recipeId, json, server.registryAccess());
         List<RecipeHolder<?>> recipes = new ArrayList<RecipeHolder<?>>(server.getRecipeManager().getOrderedRecipes());
@@ -384,8 +430,21 @@ final class RecipeEditsApplier {
             }
         }
         if (!found) {
-            throw new IOException("recipe does not exist: " + recipeId);
+            if (!allowAdd) {
+                throw new IOException("recipe does not exist: " + recipeId);
+            }
+            recipes.add(replacement);
         }
+        server.getRecipeManager().replaceRecipes(recipes);
+        server.getPlayerList().broadcastAll(new ClientboundUpdateRecipesPacket(
+                server.getRecipeManager().getOrderedRecipes()));
+    }
+
+    /** Removes one live recipe and synchronizes the resulting collection. */
+    private static void removeRecipe(MinecraftServer server, ResourceLocation recipeId) {
+        List<RecipeHolder<?>> recipes = new ArrayList<RecipeHolder<?>>(
+                server.getRecipeManager().getOrderedRecipes());
+        recipes.removeIf(holder -> holder.id().equals(recipeId));
         server.getRecipeManager().replaceRecipes(recipes);
         server.getPlayerList().broadcastAll(new ClientboundUpdateRecipesPacket(
                 server.getRecipeManager().getOrderedRecipes()));
@@ -453,8 +512,121 @@ final class RecipeEditsApplier {
 
     private static Optional<JsonObject> createRecipeJson(RecipeHolder<?> holder, RecipePatch patch,
                                                           HolderLookup.Provider registries) {
+        if (RecipePatchSemantics.isCreation(patch)) {
+            return createNewRecipeJson(patch);
+        }
+        if (RecipePatchSemantics.isDeletion(patch)) {
+            return RecipeDeletionAdapter.matches(holder, patch.serializerId(), patch.baseFingerprint())
+                    ? Optional.of(new JsonObject()) : Optional.empty();
+        }
         Optional<EditorModel> model = RecipeEditorAdapters.createModel(holder, registries);
         return model.flatMap(value -> createRecipeJson(holder, patch, registries, value));
+    }
+
+    private static Optional<JsonObject> createNewRecipeJson(RecipePatch patch) {
+        if (!RecipePatchSemantics.isCreation(patch)
+                || !RecipeCreationAdapter.isCreatableSerializer(patch.serializerId())) {
+            return Optional.empty();
+        }
+        ResourceLocation id = ResourceLocation.tryParse(patch.recipeId());
+        ResourceLocation output = ResourceLocation.tryParse(patch.fields().get("output.item"));
+        if (id == null || !"jeieditor".equals(id.getNamespace()) || output == null
+                || !BuiltInRegistries.ITEM.containsKey(output)) {
+            return Optional.empty();
+        }
+        int count;
+        try {
+            count = Integer.parseInt(patch.fields().get("output.count"));
+        } catch (RuntimeException exception) {
+            return Optional.empty();
+        }
+        if (count < 1 || count > 64) {
+            return Optional.empty();
+        }
+        if (!RecipeCreationAdapter.isCreatableSerializer(patch.serializerId())) {
+            return Optional.empty();
+        }
+        if (!"minecraft:crafting_shaped".equals(patch.serializerId())
+                && !"minecraft:crafting_shapeless".equals(patch.serializerId())) {
+            try {
+                float experience = Float.parseFloat(patch.fields().getOrDefault("recipe.experience", "0.0"));
+                int cookingTime = Integer.parseInt(patch.fields().getOrDefault("recipe.cooking_time", "200"));
+                if (!Float.isFinite(experience) || experience < 0.0F || experience > 1000.0F
+                        || cookingTime < 1 || cookingTime > 1000000) {
+                    return Optional.empty();
+                }
+            } catch (RuntimeException exception) {
+                return Optional.empty();
+            }
+        }
+        JsonObject recipe = new JsonObject();
+        recipe.addProperty("type", patch.serializerId());
+        List<EditorIngredient> creationGrid = creationInputGrid(patch);
+        if ("minecraft:crafting_shaped".equals(patch.serializerId())
+                || "minecraft:crafting_shapeless".equals(patch.serializerId())) {
+            if (!hasIngredient(creationGrid)) {
+                return Optional.empty();
+            }
+        }
+        if ("minecraft:crafting_shaped".equals(patch.serializerId())) {
+            recipe.addProperty("category", "misc");
+            recipe.add("pattern", shapedPattern(creationGrid));
+            recipe.add("key", shapedKey(creationGrid));
+        } else if ("minecraft:crafting_shapeless".equals(patch.serializerId())) {
+            recipe.addProperty("category", "misc");
+            JsonArray ingredients = new JsonArray();
+            for (EditorIngredient ingredient : creationGrid) {
+                if (ingredient != null) {
+                    ingredients.add(ingredientJson(ingredient));
+                }
+            }
+            recipe.add("ingredients", ingredients);
+        } else {
+            if (creationGrid.isEmpty() || creationGrid.get(0) == null) {
+                return Optional.empty();
+            }
+            recipe.add("ingredient", ingredientJson(creationGrid.get(0)));
+            recipe.addProperty("experience", patch.fields().getOrDefault("recipe.experience", "0.0"));
+            recipe.addProperty("cookingtime", patch.fields().getOrDefault("recipe.cooking_time", "200"));
+        }
+        JsonObject result = new JsonObject();
+        result.addProperty("id", output.toString());
+        result.addProperty("count", count);
+        recipe.add("result", result);
+        return Optional.of(recipe);
+    }
+
+    private static List<EditorIngredient> creationInputGrid(RecipePatch patch) {
+        int size = CookingRecipeEditorAdapter.supportsSerializer(patch.serializerId()) ? 1 : 9;
+        List<EditorIngredient> grid = new ArrayList<EditorIngredient>(size);
+        for (int index = 0; index < size; index++) {
+            String prefix = "input." + index;
+            String item = patch.fields().get(prefix + ".item");
+            String countText = patch.fields().get(prefix + ".count");
+            if (item == null && countText == null) {
+                grid.add(null);
+                continue;
+            }
+            if (item == null || "minecraft:air".equals(item) || "0".equals(countText)) {
+                grid.add(null);
+                continue;
+            }
+            ResourceLocation itemId = ResourceLocation.tryParse(item);
+            if (itemId == null || !BuiltInRegistries.ITEM.containsKey(itemId)) {
+                return new ArrayList<EditorIngredient>();
+            }
+            int count;
+            try {
+                count = countText == null ? 1 : Integer.parseInt(countText);
+            } catch (NumberFormatException exception) {
+                return new ArrayList<EditorIngredient>();
+            }
+            if (count < 1 || count > 64) {
+                return new ArrayList<EditorIngredient>();
+            }
+            grid.add(new EditorIngredient(itemId.toString(), count));
+        }
+        return grid;
     }
 
     private static Optional<JsonObject> createRecipeJson(RecipeHolder<?> holder, RecipePatch patch,
@@ -511,19 +683,14 @@ final class RecipeEditsApplier {
                 return Optional.empty();
             }
             recipe.add("pattern", shapedPattern(grid));
-            recipe.add("key", shapedKey(grid));
+            recipe.add("key", shapedKey(shaped, model, patch, grid));
         } else if (holder.value() instanceof ShapelessRecipe) {
             ShapelessRecipe shapeless = (ShapelessRecipe) holder.value();
             if (!shapeless.getGroup().isEmpty()) {
                 recipe.addProperty("group", shapeless.getGroup());
             }
             recipe.addProperty("category", shapeless.category().getSerializedName());
-            JsonArray ingredients = new JsonArray();
-            for (EditorIngredient ingredient : inputs) {
-                if (ingredient != null) {
-                    ingredients.add(ingredientJson(ingredient));
-                }
-            }
+            JsonArray ingredients = shapelessIngredients(holder, model, patch);
             if (ingredients.size() == 0) {
                 return Optional.empty();
             }
@@ -567,6 +734,9 @@ final class RecipeEditsApplier {
     }
 
     private static boolean validatePatch(EditorModel model, RecipePatch patch) {
+        if (RecipePatchSemantics.isDeletion(patch)) {
+            return true;
+        }
         if (patch.fields().isEmpty()) {
             return false;
         }
@@ -730,14 +900,101 @@ final class RecipeEditsApplier {
         return pattern;
     }
 
-    private static JsonObject shapedKey(List<EditorIngredient> grid) {
+    private static JsonObject shapedKey(ShapedRecipe shaped, EditorModel model,
+                                        RecipePatch patch, List<EditorIngredient> grid) {
         JsonObject key = new JsonObject();
         for (int i = 0; i < grid.size(); i++) {
-            if (grid.get(i) != null) {
-                key.add(String.valueOf((char) ('a' + i)), ingredientJson(grid.get(i)));
+            EditorIngredient current = grid.get(i);
+            if (current != null) {
+                Ingredient original = shapedIngredientAt(shaped, i);
+                String patchKey = inputPatchKeyForGrid(shaped, model, patch, i);
+                key.add(String.valueOf((char) ('a' + i)),
+                        ingredientJson(original, current, patchKey != null));
             }
         }
         return key;
+    }
+
+    private static JsonObject shapedKey(List<EditorIngredient> grid) {
+        JsonObject key = new JsonObject();
+        for (int i = 0; i < grid.size(); i++) {
+            EditorIngredient ingredient = grid.get(i);
+            if (ingredient != null) {
+                key.add(String.valueOf((char) ('a' + i)), ingredientJson(ingredient));
+            }
+        }
+        return key;
+    }
+
+    private static JsonArray shapelessIngredients(RecipeHolder<?> holder, EditorModel model,
+                                                   RecipePatch patch) {
+        JsonArray result = new JsonArray();
+        @SuppressWarnings("unchecked")
+        RecipeHolder<net.minecraft.world.item.crafting.CraftingRecipe> craftingHolder =
+                (RecipeHolder<net.minecraft.world.item.crafting.CraftingRecipe>)
+                        (RecipeHolder<?>) holder;
+        Map<Integer, Ingredient> originals = CraftingGridHelper
+                .getGuiSlotToIngredientMap(craftingHolder, 0, 0);
+        for (EditorSlot slot : model.slots()) {
+            if (!"input".equals(slot.role())) {
+                continue;
+            }
+            int gridIndex = inputIndex(slot.key());
+            if (gridIndex < 0) {
+                continue;
+            }
+            EditorIngredient current = patchedIngredient(slot, patch.fields());
+            if (current == null) {
+                continue;
+            }
+            Ingredient original = originals.get(Integer.valueOf(gridIndex));
+            result.add(ingredientJson(original, current, hasInputPatch(patch, slot.key())));
+        }
+        return result;
+    }
+
+    private static Ingredient shapedIngredientAt(ShapedRecipe shaped, int gridIndex) {
+        List<Ingredient> ingredients = shaped.getIngredients();
+        int width = shaped.getWidth();
+        int height = shaped.getHeight();
+        for (int compactIndex = 0; compactIndex < ingredients.size(); compactIndex++) {
+            if (CraftingSlotMapper.craftingGridIndex(compactIndex, width, height) == gridIndex) {
+                return ingredients.get(compactIndex);
+            }
+        }
+        return null;
+    }
+
+    private static String inputPatchKeyForGrid(ShapedRecipe shaped, EditorModel model,
+                                                RecipePatch patch, int gridIndex) {
+        String fixedKey = "input." + gridIndex;
+        if (hasInputPatch(patch, fixedKey)) {
+            return fixedKey;
+        }
+        boolean fixedGrid = hasInputSlot(model, "input.8");
+        int width = shaped.getWidth();
+        int height = shaped.getHeight();
+        for (EditorSlot slot : model.slots()) {
+            if (!"input".equals(slot.role())) {
+                continue;
+            }
+            int compactIndex = inputIndex(slot.key());
+            if (compactIndex < 0) {
+                continue;
+            }
+            int mapped = fixedGrid ? compactIndex
+                    : CraftingSlotMapper.craftingGridIndex(compactIndex,
+                    width, height);
+            if (mapped == gridIndex && hasInputPatch(patch, slot.key())) {
+                return slot.key();
+            }
+        }
+        return null;
+    }
+
+    private static boolean hasInputPatch(RecipePatch patch, String slotKey) {
+        return patch.fields().containsKey(slotKey + ".item")
+                || patch.fields().containsKey(slotKey + ".count");
     }
 
     private static boolean hasIngredient(List<EditorIngredient> grid) {
@@ -783,6 +1040,26 @@ final class RecipeEditsApplier {
         JsonObject json = new JsonObject();
         json.addProperty("item", ingredient.itemId());
         return json;
+    }
+
+    /** Keep tag/custom ingredient JSON for untouched slots. Once a slot is
+     * edited, the concrete item selected by the user intentionally replaces
+     * the original ingredient. */
+    private static JsonElement ingredientJson(Ingredient original, EditorIngredient current,
+                                              boolean edited) {
+        if (!edited && original != null && !original.isEmpty()) {
+            try {
+                Optional<JsonElement> encoded = Ingredient.CODEC
+                        .encodeStart(JsonOps.INSTANCE, original).result();
+                if (encoded.isPresent()) {
+                    return encoded.get();
+                }
+            } catch (RuntimeException ignored) {
+                // Fall through to the representative item if this ingredient
+                // uses a codec that cannot be encoded in the current context.
+            }
+        }
+        return ingredientJson(current);
     }
 
     private static JsonObject resultJson(EditorIngredient result) {

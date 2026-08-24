@@ -5,6 +5,7 @@ import cc.sighs.JEIEditor.editor.RecipeEditSession;
 import cc.sighs.JEIEditor.editor.EditorModel;
 import cc.sighs.JEIEditor.editor.EditorIngredient;
 import cc.sighs.JEIEditor.editor.EditorSlot;
+import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
 import mezz.jei.api.gui.ingredient.IRecipeSlotDrawable;
 import mezz.jei.api.gui.ingredient.IRecipeSlotView;
 import mezz.jei.api.gui.ingredient.IRecipeSlotsView;
@@ -20,9 +21,17 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.HashSet;
+import java.util.WeakHashMap;
+import java.util.Locale;
+import java.util.regex.Pattern;
 
 /** Client-only state for the first editor interaction slice. */
 final class ClientEditorState {
+    private static final Pattern RECIPE_PATH = Pattern.compile("[a-z0-9._/-]+");
+    private static final String RECIPE_NAMESPACE = "jeieditor";
     private static String lastDrop = "";
     // Keep the UI switch independent from the pending-edit session. JEI may reset
     // or recreate recipe state while the recipe screen remains open.
@@ -32,14 +41,14 @@ final class ClientEditorState {
     private static boolean toggleArmed = true;
     // Guard all editor buttons against duplicate press routing for one click.
     private static boolean actionClickArmed = true;
-    // A recipe sync can make JEI rebuild or temporarily replace its screen.
-    // Keep the screen identity until the save result arrives so that only the
-    // page affected by this save is restored.
-    private static Screen saveScreen;
-    private static boolean saveRestorePending;
     private static final RecipeEditSession session = new RecipeEditSession();
     private static final Map<String, RecipePatch> submittedSavePatches =
             new LinkedHashMap<String, RecipePatch>();
+    private static final Map<Screen, Set<String>> newRecipePageIds =
+            new WeakHashMap<Screen, Set<String>>();
+    /** Draft models keyed by the screen that owns their source JEI layout. */
+    private static final Map<Screen, Map<String, EditorModel>> creationDrafts =
+            new WeakHashMap<Screen, Map<String, EditorModel>>();
     private static EditorModel lastModel;
     private static String lastSlotKey;
     private static IRecipeSlotsView lastRecipeSlots;
@@ -114,8 +123,130 @@ final class ClientEditorState {
         refreshPreview();
     }
 
+    static void deleteRecipe(EditorModel model) {
+        session.replace(RecipePatchSemantics.delete(model));
+        clearPreview();
+    }
+
+    static void createRecipe(Screen screen, EditorModel model) {
+        session.apply(RecipeCreationAdapter.createPatch(model));
+        Set<String> ids = newRecipePageIds.get(screen);
+        if (ids == null) {
+            ids = new HashSet<String>();
+            newRecipePageIds.put(screen, ids);
+        }
+        ids.add(model.recipeId());
+        Map<String, EditorModel> drafts = creationDrafts.get(screen);
+        if (drafts == null) {
+            drafts = new LinkedHashMap<String, EditorModel>();
+            creationDrafts.put(screen, drafts);
+        }
+        drafts.put(model.recipeId(), model);
+        clearPreview();
+    }
+
+    /** Returns the staged blank model whose source is the visible recipe. */
+    static Optional<EditorModel> creationModelFor(Screen screen, String sourceRecipeId) {
+        Map<String, EditorModel> drafts = creationDrafts.get(screen);
+        if (drafts == null || sourceRecipeId == null) {
+            return Optional.empty();
+        }
+        EditorModel match = null;
+        for (EditorModel draft : drafts.values()) {
+            if (sourceRecipeId.equals(draft.properties().get(RecipeCreationAdapter.SOURCE_RECIPE_FIELD))) {
+                match = draft;
+            }
+        }
+        return Optional.ofNullable(match);
+    }
+
+    static boolean isRecipeDeleted(String recipeId) {
+        return RecipePatchSemantics.isDeletion(getPendingPatch(recipeId));
+    }
+
+    static boolean isCreationStaged(String recipeId) {
+        return RecipePatchSemantics.isCreation(getPendingPatch(recipeId));
+    }
+
+    static boolean hasCreationDraft(Screen screen) {
+        Map<String, EditorModel> drafts = creationDrafts.get(screen);
+        return drafts != null && !drafts.isEmpty();
+    }
+
+    static boolean cancelCreationDraft(Screen screen, String recipeId) {
+        Map<String, EditorModel> drafts = creationDrafts.get(screen);
+        if (drafts == null || recipeId == null || !drafts.containsKey(recipeId)
+                || !isCreationStaged(recipeId)) {
+            return false;
+        }
+        session.remove(java.util.Collections.singleton(recipeId));
+        drafts.remove(recipeId);
+        if (drafts.isEmpty()) {
+            creationDrafts.remove(screen);
+        }
+        Set<String> pageIds = newRecipePageIds.get(screen);
+        if (pageIds != null) {
+            pageIds.remove(recipeId);
+            if (pageIds.isEmpty()) {
+                newRecipePageIds.remove(screen);
+            }
+        }
+        clearPreview();
+        return true;
+    }
+
+    /** Renames the staged creation patch using the path typed in the page bar. */
+    static String renameCreationDraft(Screen screen, String enteredPath) {
+        String path = enteredPath == null ? "" : enteredPath.trim();
+        if (path.isEmpty()) {
+            return "Enter a recipe ID first";
+        }
+        if (path.indexOf(':') >= 0 || !RECIPE_PATH.matcher(path).matches()) {
+            return "Use only the recipe path; namespace is jeieditor";
+        }
+        path = path.toLowerCase(Locale.ROOT);
+        Map<String, EditorModel> drafts = creationDrafts.get(screen);
+        if (drafts == null || drafts.isEmpty()) {
+            return "Create a new recipe first";
+        }
+        if (drafts.size() > 1) {
+            return "Only one new recipe can be named at a time";
+        }
+        String oldId = drafts.keySet().iterator().next();
+        RecipePatch current = getPendingPatch(oldId);
+        EditorModel oldModel = drafts.get(oldId);
+        if (current == null || oldModel == null || !RecipePatchSemantics.isCreation(current)) {
+            return "Create a new recipe first";
+        }
+        String newId = RECIPE_NAMESPACE + ":" + path;
+        if (getPendingPatch(newId) != null && !newId.equals(oldId)) {
+            return "That recipe ID is already being edited";
+        }
+        EditorModel renamed = new EditorModel(newId, oldModel.serializerId(),
+                "new:" + newId, oldModel.slots(), oldModel.properties());
+        RecipePatch replacement = new RecipePatch(newId, current.serializerId(),
+                "new:" + newId, current.fields());
+        session.remove(java.util.Collections.singleton(oldId));
+        session.apply(replacement);
+        drafts.remove(oldId);
+        drafts.put(newId, renamed);
+        Set<String> pageIds = newRecipePageIds.get(screen);
+        if (pageIds != null) {
+            pageIds.remove(oldId);
+            pageIds.add(newId);
+        }
+        return "";
+    }
+
+    static void cancelRecipeDeletion(String recipeId) {
+        session.remove(java.util.Collections.singleton(recipeId));
+        clearPreview();
+    }
+
     static void clearPendingPatch() {
         session.reset();
+        creationDrafts.clear();
+        newRecipePageIds.clear();
         clearPreview();
         lastModel = null;
         lastSlotKey = null;
@@ -132,6 +263,19 @@ final class ClientEditorState {
         lastRecipe = null;
     }
 
+    static void clearPendingPatches(Screen screen, java.util.Collection<String> recipeIds) {
+        java.util.LinkedHashSet<String> ids = new java.util.LinkedHashSet<String>();
+        if (recipeIds != null) {
+            ids.addAll(recipeIds);
+        }
+        Set<String> created = newRecipePageIds.remove(screen);
+        if (created != null) {
+            ids.addAll(created);
+        }
+        creationDrafts.remove(screen);
+        clearPendingPatches(ids);
+    }
+
     static void undo() {
         session.undo();
         refreshPreview();
@@ -146,26 +290,12 @@ final class ClientEditorState {
         clearPendingPatch();
     }
 
-    static void markSaveSubmitted(Screen screen) {
-        saveScreen = screen;
-        saveRestorePending = true;
-    }
-
     static void markSaveSubmittedPatches(List<RecipePatch> patches) {
         if (patches != null) {
             for (RecipePatch patch : patches) {
                 submittedSavePatches.put(patch.recipeId(), patch);
             }
         }
-    }
-
-    static Screen getSaveScreen() {
-        return saveRestorePending ? saveScreen : null;
-    }
-
-    static void clearSaveRestore() {
-        saveScreen = null;
-        saveRestorePending = false;
     }
 
     static void rememberTarget(EditorModel model, String slotKey, IRecipeSlotsView slots, Object recipe) {
@@ -353,10 +483,6 @@ final class ClientEditorState {
 
     static void applyResult(boolean success, String message, String recipeId) {
         lastDrop = message + (recipeId.isEmpty() ? "" : ": " + recipeId);
-        // The response is the end of this save attempt, whether it succeeded
-        // or failed. A failed request must not restore a page on a later,
-        // unrelated recipe synchronization.
-        clearSaveRestore();
         if (!success) {
             submittedSavePatches.clear();
         }

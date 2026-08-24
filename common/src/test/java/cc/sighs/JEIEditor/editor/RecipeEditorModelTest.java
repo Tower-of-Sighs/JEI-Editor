@@ -110,6 +110,31 @@ class RecipeEditorModelTest {
     }
 
     @Test
+    void recipeDeletionReplacesSlotEditsForTheSameRecipe() {
+        RecipeEditSession session = new RecipeEditSession();
+        session.apply(patch("minecraft:iron_ingot"));
+        EditorModel model = new EditorModel("minecraft:test", "minecraft:crafting_shaped", "fingerprint",
+                Collections.<EditorSlot>emptyList());
+
+        session.replace(RecipePatchSemantics.delete(model));
+
+        assertEquals(true, RecipePatchSemantics.isDeletion(session.pending()));
+        assertEquals(1, session.pending().fields().size());
+    }
+
+    @Test
+    void recipePatchSemanticsDistinguishesCreationFromDeletion() {
+        Map<String, String> fields = new LinkedHashMap<String, String>();
+        fields.put(RecipePatchSemantics.CREATED_FIELD, RecipePatchSemantics.CREATED_VALUE);
+        fields.put("output.item", "minecraft:stone");
+        RecipePatch patch = new RecipePatch("jeieditor:new_test", "minecraft:crafting_shaped",
+                "new:jeieditor:new_test", fields);
+
+        assertEquals(true, RecipePatchSemantics.isCreation(patch));
+        assertEquals(false, RecipePatchSemantics.isDeletion(patch));
+    }
+
+    @Test
     void editorModelKeepsStablePropertiesImmutable() {
         Map<String, String> properties = new LinkedHashMap<String, String>();
         properties.put("cooking_time", "200");

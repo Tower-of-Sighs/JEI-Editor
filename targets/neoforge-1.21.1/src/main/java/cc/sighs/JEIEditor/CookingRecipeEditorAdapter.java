@@ -30,13 +30,16 @@ final class CookingRecipeEditorAdapter {
         ResourceLocation serializer = BuiltInRegistries.RECIPE_SERIALIZER.getKey(recipe.getSerializer());
         if (serializer == null || !supportsSerializer(serializer.toString())) return Optional.empty();
         List<Ingredient> ingredients = recipe.getIngredients();
-        if (ingredients.size() != 1 || !ingredients.get(0).isSimple()) return Optional.empty();
+        if (ingredients.size() != 1) return Optional.empty();
         Optional<EditorIngredient> input = simpleIngredient(ingredients.get(0));
         Optional<EditorIngredient> output = simpleStack(recipe.getResultItem(registries));
-        if (!input.isPresent() || !output.isPresent() || recipe.getExperience() < 0.0F
+        if (!input.isPresent() && !isAirIngredient(ingredients.get(0))) {
+            return Optional.empty();
+        }
+        if (!output.isPresent() || recipe.getExperience() < 0.0F
                 || recipe.getCookingTime() < 1) return Optional.empty();
         List<EditorSlot> slots = new ArrayList<EditorSlot>();
-        slots.add(new EditorSlot("input.0", "input", input.get()));
+        slots.add(new EditorSlot("input.0", "input", input.orElse(null)));
         slots.add(new EditorSlot("output", "output", output.get()));
         Map<String, String> properties = new LinkedHashMap<String, String>();
         properties.put("experience", Float.toString(recipe.getExperience()));
@@ -89,7 +92,7 @@ final class CookingRecipeEditorAdapter {
     }
 
     private static Optional<EditorIngredient> simpleIngredient(Ingredient ingredient) {
-        if (ingredient == null || ingredient.isEmpty() || !ingredient.isSimple()) return Optional.empty();
+        if (ingredient == null || ingredient.isEmpty()) return Optional.empty();
         ItemStack[] items = ingredient.getItems();
         // JEI commonly exposes furnace inputs backed by an item tag, which
         // expands to several stacks. The editor writes a concrete item when
@@ -102,6 +105,14 @@ final class CookingRecipeEditorAdapter {
             }
         }
         return Optional.empty();
+    }
+
+    private static boolean isAirIngredient(Ingredient ingredient) {
+        if (ingredient == null || ingredient.isEmpty()) {
+            return false;
+        }
+        ItemStack[] items = ingredient.getItems();
+        return items.length == 1 && items[0].is(net.minecraft.world.item.Items.AIR);
     }
 
     private static Optional<EditorIngredient> simpleStack(ItemStack stack) {

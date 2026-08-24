@@ -49,6 +49,17 @@ public final class RecipeEditSession {
         activeRecipeId = patch.recipeId();
     }
 
+    /** Replaces all fields for one recipe, for mutually exclusive operations
+     * such as deleting a recipe instead of editing one of its slots. */
+    public void replace(RecipePatch patch) {
+        if (patch == null) {
+            throw new IllegalArgumentException("patch cannot be null");
+        }
+        recordState();
+        pendingPatches.put(patch.recipeId(), patch);
+        activeRecipeId = patch.recipeId();
+    }
+
     /** Drops unsubmitted changes while keeping edit mode available. */
     public void reset() {
         pendingPatches.clear();

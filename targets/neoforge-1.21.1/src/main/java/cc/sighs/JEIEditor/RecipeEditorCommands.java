@@ -46,7 +46,10 @@ final class RecipeEditorCommands {
                 if (!RecipeEditorPolicy.load(server).canEdit(source, policyId)) throw new IOException("permission or namespace policy denied: " + patch.recipeId());
                 ResourceLocation id = ResourceLocation.tryParse(patch.recipeId()); RecipeHolder<?> holder = id == null ? null : server.getRecipeManager().byKey(id).orElse(null);
                 if ((!FuelRecipeEditorAdapter.isFuelPatch(patch)
-                        && (holder == null || !RecipeEditorAdapters.createModel(holder, server.registryAccess()).isPresent()))
+                        && (holder == null && !(cc.sighs.JEIEditor.editor.RecipePatchSemantics.isDeletion(patch)
+                        || cc.sighs.JEIEditor.editor.RecipePatchSemantics.isCreation(patch))
+                        || (holder != null && !cc.sighs.JEIEditor.editor.RecipePatchSemantics.isDeletion(patch)
+                        && !RecipeEditorAdapters.createModel(holder, server.registryAccess()).isPresent())))
                         || !RecipeEditsApplier.canApply(server, patch)) throw new IOException("stale or unsupported patch: " + patch.recipeId());
             }
             if (patches.isEmpty()) { source.sendSuccess(() -> Component.literal("Import contained no recipe edits"), false); return 1; }

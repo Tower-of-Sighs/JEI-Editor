@@ -47,6 +47,9 @@ final class JeiRecipeIntrospection {
     private static Field recipesGuiBookmarksField;
     private static Field borderPaddingField;
     private static Field recipeLayoutWidgetsField;
+    private static Field recipesGuiPreviousPageField;
+    private static Field recipesGuiNextPageField;
+    private static Method iconButtonAreaMethod;
     private static Method recipeLayoutsAreaMethod;
     private static Method ensureRecipeExtrasMethod;
     private static final Map<ITextWidget, ScreenPosition> hiddenRecipeTextPositions =
@@ -218,6 +221,67 @@ final class JeiRecipeIntrospection {
         } catch (RuntimeException ignored) {
             return false;
         }
+    }
+
+    /**
+     * Returns the exact strip JEI uses to draw its page counter. In JEI
+     * 19.44, RecipesGui.render() unions previousPage.getArea() and
+     * nextPage.getArea(), then centers pageString in that union. Keeping the
+     * editor field on the same geometry avoids guesses based on recipe slots.
+     */
+    static Optional<Rect2i> recipePageNavigationArea(RecipesGui gui) {
+        if (gui == null) {
+            return Optional.empty();
+        }
+        try {
+            Field previousField = recipesGuiPreviousPageField;
+            if (previousField == null || !previousField.getDeclaringClass().isInstance(gui)) {
+                previousField = findNamedField(RecipesGui.class, "previousPage", Object.class);
+                recipesGuiPreviousPageField = previousField;
+            }
+            Field nextField = recipesGuiNextPageField;
+            if (nextField == null || !nextField.getDeclaringClass().isInstance(gui)) {
+                nextField = findNamedField(RecipesGui.class, "nextPage", Object.class);
+                recipesGuiNextPageField = nextField;
+            }
+            if (previousField == null || nextField == null) {
+                return Optional.empty();
+            }
+            Object previous = previousField.get(gui);
+            Object next = nextField.get(gui);
+            Rect2i previousArea = iconButtonArea(previous);
+            Rect2i nextArea = iconButtonArea(next);
+            if (previousArea == null || nextArea == null) {
+                return Optional.empty();
+            }
+            int left = Math.min(previousArea.getX(), nextArea.getX());
+            int top = Math.min(previousArea.getY(), nextArea.getY());
+            int right = Math.max(previousArea.getX() + previousArea.getWidth(),
+                    nextArea.getX() + nextArea.getWidth());
+            int bottom = Math.max(previousArea.getY() + previousArea.getHeight(),
+                    nextArea.getY() + nextArea.getHeight());
+            return Optional.of(new Rect2i(left, top, right - left, bottom - top));
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
+            return Optional.empty();
+        }
+    }
+
+    private static Rect2i iconButtonArea(Object button) throws ReflectiveOperationException {
+        if (button == null) {
+            return null;
+        }
+        Method method = iconButtonAreaMethod;
+        if (method == null || !method.getDeclaringClass().isInstance(button)) {
+            method = button.getClass().getMethod("getArea");
+            method.setAccessible(true);
+            iconButtonAreaMethod = method;
+        }
+        Object area = method.invoke(button);
+        if (!(area instanceof ImmutableRect2i)) {
+            return null;
+        }
+        ImmutableRect2i rect = (ImmutableRect2i) area;
+        return new Rect2i(rect.getX(), rect.getY(), rect.getWidth(), rect.getHeight());
     }
 
     private static boolean contains(Rect2i area, double mouseX, double mouseY) {

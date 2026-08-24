@@ -3,6 +3,7 @@ package cc.sighs.JEIEditor;
 import cc.sighs.JEIEditor.editor.RecipePatch;
 import cc.sighs.JEIEditor.editor.RecipeEditBundle;
 import cc.sighs.JEIEditor.editor.RecipeEditPayloadRules;
+import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
@@ -198,6 +199,14 @@ final class NeoForge121Network {
         if (!RecipeEditorPolicy.load(server).canEdit(player, patch.recipeId())) {
             return "Permission or namespace policy denied";
         }
+        if (RecipePatchSemantics.isCreation(patch)) {
+            if (!"jeieditor".equals(recipeId.getNamespace())
+                    || server.getRecipeManager().byKey(recipeId).isPresent()) {
+                return "New recipe id is already in use";
+            }
+            return RecipeEditsApplier.canApply(server, patch)
+                    ? null : "New recipe is invalid or unsupported";
+        }
         RecipeHolder<?> holder = server.getRecipeManager().byKey(recipeId).orElse(null);
         if (holder == null) {
             return "Recipe does not exist";
@@ -234,7 +243,10 @@ final class NeoForge121Network {
             }
             if (beforeModel != null) {
                 data.put(patch, beforeModel);
-                data.audit(context.player().getName().getString(), "SAVE", previous, patch);
+                data.audit(context.player().getName().getString(),
+                        RecipePatchSemantics.isDeletion(patch) ? "DELETE"
+                                : (RecipePatchSemantics.isCreation(patch) ? "CREATE" : "SAVE"),
+                        previous, patch);
             }
             LOGGER.info("Saved recipe edit for {}", patch.recipeId());
             saveRecipeBatch(server, context, patches, index + 1);
