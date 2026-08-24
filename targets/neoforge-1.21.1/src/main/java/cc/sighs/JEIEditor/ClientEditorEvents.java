@@ -55,7 +55,6 @@ public final class ClientEditorEvents {
     @SubscribeEvent
     public static void onMouseButtonReleased(ScreenEvent.MouseButtonReleased.Pre event) {
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
-            ClientEditorState.rememberMousePosition(event.getScreen(), event.getMouseX(), event.getMouseY());
             if (event.getButton() == 0
                     && buttonUnderMouse(event.getScreen(), event.getMouseX(), event.getMouseY()) != null) {
                 // The editor invokes its button from MouseButtonPressed.Pre.
@@ -123,6 +122,9 @@ public final class ClientEditorEvents {
         // JEI's left/right ingredient overlays are outside RecipesGui's own
         // area. Do not treat those overlay regions as editor-menu space.
         if (!gui.isMouseOver(mouseX, mouseY)) {
+            return false;
+        }
+        if (JeiRecipeIntrospection.isOverlayAt(gui, mouseX, mouseY)) {
             return false;
         }
         if (gui.getRecipeLayoutUnderMouse(mouseX, mouseY).isPresent()) {
@@ -205,7 +207,6 @@ public final class ClientEditorEvents {
     @SubscribeEvent
     public static void onScreenRender(ScreenEvent.Render.Post event) {
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
-            ClientEditorState.rememberMousePosition(event.getScreen(), event.getMouseX(), event.getMouseY());
             JeiRecipeEditorPlugin.drawPendingSlotHighlights((RecipesGui) event.getScreen(), event.getGuiGraphics());
             ClientEditorState.drawGhostHighlights(event.getGuiGraphics(), event.getMouseX(), event.getMouseY());
             renderMenuAboveJei(event);
@@ -276,9 +277,9 @@ public final class ClientEditorEvents {
         editButtons.put(screen, edit);
         saveButtons.put(screen, save);
         resetButtons.put(screen, reset);
-        screen.renderables.add(edit);
-        screen.renderables.add(save);
-        screen.renderables.add(reset);
+        // These controls are rendered and dispatched exclusively by the
+        // editor event handlers. Keeping them out of Screen.renderables avoids
+        // vanilla's second mouse dispatch and duplicate click sounds.
     }
 
     private static boolean isMenuOpen(net.minecraft.client.gui.screens.Screen screen) {

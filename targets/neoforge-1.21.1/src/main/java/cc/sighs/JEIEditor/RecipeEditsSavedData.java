@@ -18,7 +18,7 @@ import java.util.Map;
 import java.util.ArrayList;
 import java.util.List;
 
-/** World-scoped patch storage. JSON generation is intentionally a later step. */
+/** World-scoped patch and audit storage for the generated recipe overrides. */
 final class RecipeEditsSavedData extends SavedData {
     private static final String DATA_ID = "jeieditor_recipe_edits";
     private static final int SCHEMA_VERSION = 2;
@@ -142,7 +142,15 @@ final class RecipeEditsSavedData extends SavedData {
         return baseModels.get(recipeId);
     }
 
-    void audit(String actor, String operation, RecipePatch previous, RecipePatch next) { String recipeId = next != null ? next.recipeId() : previous.recipeId(); audits.add(new RecipeAuditEntry(recipeId, actor, System.currentTimeMillis(), operation, previous, next)); while (audits.size() > 128) audits.remove(0); setDirty(); }
+    void audit(String actor, String operation, RecipePatch previous, RecipePatch next) {
+        if (previous == null && next == null) {
+            return;
+        }
+        String recipeId = next != null ? next.recipeId() : previous.recipeId();
+        audits.add(new RecipeAuditEntry(recipeId, actor, System.currentTimeMillis(), operation, previous, next));
+        while (audits.size() > 128) audits.remove(0);
+        setDirty();
+    }
     List<RecipeAuditEntry> auditEntries() { return Collections.unmodifiableList(audits); }
 
     @Override

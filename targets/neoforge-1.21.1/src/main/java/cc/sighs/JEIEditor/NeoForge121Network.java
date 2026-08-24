@@ -60,6 +60,7 @@ final class NeoForge121Network {
                 context.reply(RecipeEditResultPayload.failure("Another recipe reload is in progress", payload.recipeId));
                 return;
             }
+            RecipePatch previous = RecipeEditsSavedData.get(server).patches().get(payload.recipeId);
             RecipeEditsApplier.reset(server, payload.recipeId).whenComplete((ignored, error) -> server.execute(() -> {
                 if (error != null) {
                     LOGGER.error("Failed to remove recipe edit for {}", payload.recipeId, error);
@@ -67,6 +68,9 @@ final class NeoForge121Network {
                     context.reply(RecipeEditResultPayload.failure(
                             "Recipe reset failed; check server log", payload.recipeId));
                 } else {
+                    RecipeEditsSavedData data = RecipeEditsSavedData.get(server);
+                    data.remove(payload.recipeId);
+                    data.audit(context.player().getName().getString(), "RESET", previous, null);
                     RecipeEditCoordinator.finish(server);
                     context.reply(RecipeEditResultPayload.success("Recipe reset to original", payload.recipeId));
                 }
@@ -145,6 +149,12 @@ final class NeoForge121Network {
             return;
         }
         RecipePatch patch = patches.get(index);
+        RecipeHolder<?> beforeHolder = server.getRecipeManager()
+                .byKey(ResourceLocation.tryParse(patch.recipeId())).orElse(null);
+        cc.sighs.JEIEditor.editor.EditorModel beforeModel = beforeHolder == null ? null
+                : RecipeEditorAdapters.createModel(beforeHolder, server.registryAccess()).orElse(null);
+        RecipeEditsSavedData data = RecipeEditsSavedData.get(server);
+        RecipePatch previous = data.patches().get(patch.recipeId());
         RecipeEditsApplier.apply(server, patch).whenComplete((ignored, error) -> server.execute(() -> {
             if (error != null) {
                 LOGGER.error("Failed to apply recipe edit for {}", patch.recipeId(), error);
@@ -152,6 +162,10 @@ final class NeoForge121Network {
                 context.reply(RecipeEditResultPayload.failure(
                         "Recipe reload failed; change was not accepted", patch.recipeId()));
                 return;
+            }
+            if (beforeModel != null) {
+                data.put(patch, beforeModel);
+                data.audit(context.player().getName().getString(), "SAVE", previous, patch);
             }
             LOGGER.info("Applied recipe edit for {} and reloaded server recipes", patch.recipeId());
             applyRecipeBatch(server, context, patches, index + 1);

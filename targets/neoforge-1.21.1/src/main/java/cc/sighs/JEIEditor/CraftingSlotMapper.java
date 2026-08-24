@@ -52,7 +52,7 @@ final class CraftingSlotMapper {
         // compact list; those continue through the compatibility path below.
         if ("minecraft:crafting_shaped".equals(model.serializerId())
                 && hasInputSlot(model, "input.8")) {
-            int gridIndex = visualGridIndex(slots, target);
+            int gridIndex = visualGridIndex(slots, target, 3, 3);
             return gridIndex >= 0 && gridIndex < 9 && hasInputSlot(model, "input." + gridIndex)
                     ? "input." + gridIndex
                     : null;
@@ -62,7 +62,7 @@ final class CraftingSlotMapper {
         // JEI's crafting grid helper exposes its slots as a stable row-major
         // list. Use that abstraction instead of inferring coordinates from
         // pixel rectangles, which vary between layouts and versions.
-        int gridIndex = visualGridIndex(slots, target);
+        int gridIndex = visualGridIndex(slots, target, dimensions[0], dimensions[1]);
         int compactIndex = compactIndex(gridIndex, dimensions[0], dimensions[1], inputCount);
         if (compactIndex < 0 || compactIndex >= inputCount) {
             return null;
@@ -128,15 +128,23 @@ final class CraftingSlotMapper {
      * editable and the saved pattern keeps its intended shape.
      */
     static int craftingGridIndex(int index, int width, int height) {
+        // This mirrors JEI's CraftingGridHelper semantic placement. It is
+        // deliberately expressed in grid coordinates, never screen pixels.
         if (width == 1) {
-            int rowOffset = height == 1 ? 1 : 0;
-            return (rowOffset + index) * 3 + 1;
+            return height == 1 ? 4 : index * 3 + 1;
+        }
+        if (height == 1) {
+            return index + 3;
         }
         if (width == 2) {
-            int rowOffset = height == 1 ? 1 : 0;
-            int row = index / 2;
-            int column = index % 2;
-            return (rowOffset + row) * 3 + column;
+            int gridIndex = index;
+            if (index > 1) {
+                gridIndex++;
+            }
+            if (index > 3) {
+                gridIndex++;
+            }
+            return gridIndex;
         }
         if (height == 2) {
             return index + 3;
@@ -164,7 +172,8 @@ final class CraftingSlotMapper {
      * custom recipe categories and the vanilla 2x3 edge case remain aligned.
      */
     @SuppressWarnings("removal")
-    private static int visualGridIndex(List<IRecipeSlotView> slots, IRecipeSlotView target) {
+    private static int visualGridIndex(List<IRecipeSlotView> slots, IRecipeSlotView target,
+                                       int width, int height) {
         if (!(target instanceof IRecipeSlotDrawable)) {
             return inputOrdinal(slots, target);
         }
@@ -183,11 +192,34 @@ final class CraftingSlotMapper {
                 return y != 0 ? y : Integer.compare(a.getX(), b.getX());
             }
         });
-        for (int index = 0; index < inputs.size(); index++) {
-            if (inputs.get(index) == target) {
-                return index;
-            }
+        List<Integer> actualX = new ArrayList<Integer>();
+        List<Integer> actualY = new ArrayList<Integer>();
+        for (IRecipeSlotDrawable input : inputs) {
+            Rect2i rect = input.getRect();
+            if (!actualX.contains(rect.getX())) actualX.add(rect.getX());
+            if (!actualY.contains(rect.getY())) actualY.add(rect.getY());
         }
-        return -1;
+        actualX.sort(Integer::compareTo);
+        actualY.sort(Integer::compareTo);
+        List<Integer> expectedX = new ArrayList<Integer>();
+        List<Integer> expectedY = new ArrayList<Integer>();
+        int ingredientCount = Math.max(1, width * height);
+        for (int index = 0; index < ingredientCount; index++) {
+            int grid = craftingGridIndex(index, width, height);
+            int x = grid % 3;
+            int y = grid / 3;
+            if (!expectedX.contains(x)) expectedX.add(x);
+            if (!expectedY.contains(y)) expectedY.add(y);
+        }
+        expectedX.sort(Integer::compareTo);
+        expectedY.sort(Integer::compareTo);
+        IRecipeSlotDrawable drawable = (IRecipeSlotDrawable) target;
+        Rect2i targetRect = drawable.getRect();
+        int xRank = actualX.indexOf(targetRect.getX());
+        int yRank = actualY.indexOf(targetRect.getY());
+        if (xRank < 0 || yRank < 0 || xRank >= expectedX.size() || yRank >= expectedY.size()) {
+            return -1;
+        }
+        return expectedY.get(yRank).intValue() * 3 + expectedX.get(xRank).intValue();
     }
 }

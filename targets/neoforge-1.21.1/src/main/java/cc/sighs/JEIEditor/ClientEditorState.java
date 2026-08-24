@@ -30,10 +30,6 @@ final class ClientEditorState {
     private static boolean toggleArmed = true;
     // Guard all editor buttons against duplicate press routing for one click.
     private static boolean actionClickArmed = true;
-    private static double lastMouseX;
-    private static double lastMouseY;
-    private static boolean mousePositionKnown;
-    private static Screen mouseScreen;
     // A recipe sync can make JEI rebuild or temporarily replace its screen.
     // Keep the screen identity until the save result arrives so that only the
     // page affected by this save is restored.
@@ -82,25 +78,6 @@ final class ClientEditorState {
 
     static void armActionClick() {
         actionClickArmed = true;
-    }
-
-    static void rememberMousePosition(Screen screen, double mouseX, double mouseY) {
-        mouseScreen = screen;
-        lastMouseX = mouseX;
-        lastMouseY = mouseY;
-        mousePositionKnown = true;
-    }
-
-    static boolean hasMousePosition(Screen screen) {
-        return mousePositionKnown && mouseScreen == screen;
-    }
-
-    static double getLastMouseX() {
-        return lastMouseX;
-    }
-
-    static double getLastMouseY() {
-        return lastMouseY;
     }
 
     static void setLastDrop(String value) {
@@ -208,14 +185,13 @@ final class ClientEditorState {
                     && view.getRole() != RecipeIngredientRole.OUTPUT) {
                 continue;
             }
-            // Rebuild every input/output display while a patch is pending.
-            // This also clears JEI's stale 2x3 crafting placement when the
-            // recipe's actual geometry differs from JEI's internal ordering.
-            previewSlots.add(drawable);
-            if (slotKey == null) {
-                drawable.createDisplayOverrides();
+            if (slotKey == null || (!patch.fields().containsKey(slotKey + ".item")
+                    && !patch.fields().containsKey(slotKey + ".count"))) {
+                // Leave untouched slots under JEI's own display pipeline. An
+                // empty override would hide their original ingredient.
                 continue;
             }
+            previewSlots.add(drawable);
             EditorIngredient ingredient = patchedIngredient(model, slotKey, patch);
             if (ingredient != null) {
                 ResourceLocation id = ResourceLocation.tryParse(ingredient.itemId());
