@@ -5,9 +5,6 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.crafting.RecipeHolder;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
 import java.util.Optional;
 
@@ -25,7 +22,8 @@ final class RecipeDeletionAdapter {
         if (serializerId == null) {
             return Optional.empty();
         }
-        String fingerprint = fingerprint(holder.id(), serializerId);
+        String fingerprint = RecipeAdapterSupport.fingerprint(holder.id().toString(), serializerId.toString(),
+                Collections.emptyList(), Collections.emptyMap());
         return Optional.of(new EditorModel(holder.id().toString(), serializerId.toString(), fingerprint,
                 Collections.emptyList()));
     }
@@ -37,18 +35,4 @@ final class RecipeDeletionAdapter {
                 .orElse(false);
     }
 
-    private static String fingerprint(ResourceLocation recipeId, ResourceLocation serializerId) {
-        String source = recipeId + "|" + serializerId;
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(source.getBytes(StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder(digest.length * 2);
-            for (byte current : digest) {
-                hex.append(String.format("%02x", current & 0xff));
-            }
-            return hex.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is required", exception);
-        }
-    }
 }

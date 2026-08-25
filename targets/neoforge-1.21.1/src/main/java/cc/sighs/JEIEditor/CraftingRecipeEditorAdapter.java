@@ -17,10 +17,8 @@ import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.item.crafting.ShapelessRecipe;
 import mezz.jei.library.gui.helpers.CraftingGridHelper;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -57,8 +55,8 @@ final class CraftingRecipeEditorAdapter {
             }
             for (int i = 0; i < ingredients.size(); i++) {
                 Ingredient source = ingredients.get(i);
-                if (!source.isEmpty() && !simpleIngredient(source).isPresent()
-                        && !isAirIngredient(source)) {
+                if (!source.isEmpty() && !RecipeAdapterSupport.simpleIngredient(source).isPresent()
+                        && !RecipeAdapterSupport.isAirIngredient(source)) {
                     return Optional.empty();
                 }
                 int gridIndex = CraftingSlotMapper.craftingGridIndex(
@@ -66,7 +64,7 @@ final class CraftingRecipeEditorAdapter {
                 if (gridIndex < 0 || gridIndex >= grid.size()) {
                     return Optional.empty();
                 }
-                grid.set(gridIndex, simpleIngredient(source).orElse(null));
+                grid.set(gridIndex, RecipeAdapterSupport.simpleIngredient(source).orElse(null));
             }
             for (int i = 0; i < grid.size(); i++) {
                 slots.add(new EditorSlot("input." + i, "input", grid.get(i)));
@@ -83,45 +81,41 @@ final class CraftingRecipeEditorAdapter {
             for (int gridIndex = 0; gridIndex < 9; gridIndex++) {
                 Ingredient source = gridIngredients.get(Integer.valueOf(gridIndex));
                 if (source != null && !source.isEmpty()
-                        && !simpleIngredient(source).isPresent() && !isAirIngredient(source)) {
+                        && !RecipeAdapterSupport.simpleIngredient(source).isPresent()
+                        && !RecipeAdapterSupport.isAirIngredient(source)) {
                     return Optional.empty();
                 }
                 slots.add(new EditorSlot("input." + gridIndex, "input",
-                        source == null ? null : simpleIngredient(source).orElse(null)));
+                        source == null ? null : RecipeAdapterSupport.simpleIngredient(source).orElse(null)));
             }
         }
 
         ItemStack result = recipe.getResultItem(registries);
-        Optional<EditorIngredient> output = simpleStack(result);
+        Optional<EditorIngredient> output = RecipeAdapterSupport.simpleStack(result);
         if (!output.isPresent()) {
             return Optional.empty();
         }
         slots.add(new EditorSlot("output", "output", output.get()));
 
-        String fingerprint = fingerprint(holder.id(), serializerId, slots);
+        String fingerprint = RecipeAdapterSupport.fingerprint(holder.id().toString(), serializerId.toString(),
+                slots, Collections.<String, String>emptyMap());
         return Optional.of(new EditorModel(holder.id().toString(), serializerId.toString(), fingerprint, slots));
     }
 
     static RecipePatch replaceInput(EditorModel model, String slotKey, ItemStack stack) {
-        Optional<EditorIngredient> ingredient = simpleStack(stack);
+        Optional<EditorIngredient> ingredient = RecipeAdapterSupport.simpleStack(stack);
         if (!ingredient.isPresent() || !slotKey.startsWith("input.")) {
             throw new IllegalArgumentException("only simple input slots can be replaced");
         }
-        LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
-        fields.put(slotKey + ".item", ingredient.get().itemId());
-        fields.put(slotKey + ".count", Integer.toString(ingredient.get().count()));
-        return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
+        return RecipeAdapterSupport.slotPatch(model, slotKey, ingredient.get());
     }
 
     static RecipePatch replaceOutput(EditorModel model, ItemStack stack) {
-        Optional<EditorIngredient> ingredient = simpleStack(stack);
+        Optional<EditorIngredient> ingredient = RecipeAdapterSupport.simpleStack(stack);
         if (!ingredient.isPresent()) {
             throw new IllegalArgumentException("only simple output items can be used");
         }
-        LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
-        fields.put("output.item", ingredient.get().itemId());
-        fields.put("output.count", Integer.toString(ingredient.get().count()));
-        return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
+        return RecipeAdapterSupport.slotPatch(model, "output", ingredient.get());
     }
 
     static RecipePatch clearSlot(EditorModel model, String slotKey) {
@@ -157,63 +151,4 @@ final class CraftingRecipeEditorAdapter {
                 model.slots(), properties);
     }
 
-    private static Optional<EditorIngredient> simpleIngredient(Ingredient ingredient) {
-        if (ingredient == null || ingredient.isEmpty()) {
-            return Optional.empty();
-        }
-        ItemStack[] items = ingredient.getItems();
-        // JEI expands tags into their concrete stacks. Keep the first valid
-        // stack as the representative so the slot remains editable; the
-        // server-side writer retains the original tag unless this slot is
-        // explicitly changed by the user.
-        for (ItemStack item : items) {
-            Optional<EditorIngredient> value = simpleStack(item);
-            if (value.isPresent()) {
-                return value;
-            }
-        }
-        return Optional.empty();
-    }
-
-    private static boolean isAirIngredient(Ingredient ingredient) {
-        if (ingredient == null || ingredient.isEmpty()) {
-            return false;
-        }
-        ItemStack[] items = ingredient.getItems();
-        return items.length == 1 && items[0].is(net.minecraft.world.item.Items.AIR);
-    }
-
-    private static Optional<EditorIngredient> simpleStack(ItemStack stack) {
-        if (stack == null || stack.isEmpty() || stack.getCount() < 1 || stack.getCount() > 64) {
-            return Optional.empty();
-        }
-        if (!stack.isComponentsPatchEmpty()) {
-            return Optional.empty();
-        }
-        ResourceLocation itemId = BuiltInRegistries.ITEM.getKey(stack.getItem());
-        return itemId == null
-                ? Optional.<EditorIngredient>empty()
-                : Optional.of(new EditorIngredient(itemId.toString(), stack.getCount()));
-    }
-
-    private static String fingerprint(ResourceLocation recipeId, ResourceLocation serializerId, List<EditorSlot> slots) {
-        StringBuilder value = new StringBuilder(recipeId.toString()).append('|').append(serializerId);
-        for (EditorSlot slot : slots) {
-            value.append('|').append(slot.key()).append('=').append(slot.role());
-            if (slot.ingredient() != null) {
-                value.append(':').append(slot.ingredient().itemId()).append(':').append(slot.ingredient().count());
-            }
-        }
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(value.toString().getBytes(StandardCharsets.UTF_8));
-            StringBuilder hex = new StringBuilder(digest.length * 2);
-            for (byte current : digest) {
-                hex.append(String.format("%02x", current & 0xff));
-            }
-            return hex.toString();
-        } catch (NoSuchAlgorithmException exception) {
-            throw new IllegalStateException("SHA-256 is required", exception);
-        }
-    }
 }

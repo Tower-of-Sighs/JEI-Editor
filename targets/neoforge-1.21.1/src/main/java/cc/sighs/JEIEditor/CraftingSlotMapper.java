@@ -94,6 +94,10 @@ final class CraftingSlotMapper {
     }
 
     private static int[] dimensions(EditorModel model, Object displayedRecipe, int inputCount) {
+        Optional<int[]> jeiDimensions = JeiRecipeIntrospection.craftingGridDimensions(displayedRecipe);
+        if (jeiDimensions.isPresent()) {
+            return jeiDimensions.get();
+        }
         Object recipe = displayedRecipe instanceof RecipeHolder<?>
                 ? ((RecipeHolder<?>) displayedRecipe).value()
                 : displayedRecipe;

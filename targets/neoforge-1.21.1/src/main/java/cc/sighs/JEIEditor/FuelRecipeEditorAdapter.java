@@ -9,8 +9,6 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -57,7 +55,7 @@ final class FuelRecipeEditorAdapter {
         properties.put("burn_time", Integer.toString(burnTime));
         String recipeId = recipeId(itemId).toString();
         return new EditorModel(recipeId, SERIALIZER,
-                fingerprint(recipeId, slots, properties), slots, properties);
+                RecipeAdapterSupport.fingerprint(recipeId, SERIALIZER, slots, properties), slots, properties);
     }
 
     static RecipePatch setBurnTime(EditorModel model, int burnTime) {
@@ -126,29 +124,4 @@ final class FuelRecipeEditorAdapter {
         }
     }
 
-    private static String fingerprint(String recipeId, List<EditorSlot> slots,
-                                      LinkedHashMap<String, String> properties) {
-        StringBuilder value = new StringBuilder(recipeId).append('|').append(SERIALIZER);
-        for (EditorSlot slot : slots) {
-            value.append('|').append(slot.key()).append('=').append(slot.role());
-            if (slot.ingredient() != null) {
-                value.append(':').append(slot.ingredient().itemId()).append(':')
-                        .append(slot.ingredient().count());
-            }
-        }
-        for (java.util.Map.Entry<String, String> property : properties.entrySet()) {
-            value.append('|').append(property.getKey()).append('=').append(property.getValue());
-        }
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256")
-                    .digest(value.toString().getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder(digest.length * 2);
-            for (byte current : digest) {
-                result.append(String.format("%02x", current & 0xff));
-            }
-            return result.toString();
-        } catch (Exception exception) {
-            throw new IllegalStateException("SHA-256 is required", exception);
-        }
-    }
 }

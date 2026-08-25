@@ -12,8 +12,6 @@ import net.minecraft.world.item.crafting.AbstractCookingRecipe;
 import net.minecraft.world.item.crafting.Ingredient;
 import net.minecraft.world.item.crafting.RecipeHolder;
 
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -31,9 +29,9 @@ final class CookingRecipeEditorAdapter {
         if (serializer == null || !supportsSerializer(serializer.toString())) return Optional.empty();
         List<Ingredient> ingredients = recipe.getIngredients();
         if (ingredients.size() != 1) return Optional.empty();
-        Optional<EditorIngredient> input = simpleIngredient(ingredients.get(0));
-        Optional<EditorIngredient> output = simpleStack(recipe.getResultItem(registries));
-        if (!input.isPresent() && !isAirIngredient(ingredients.get(0))) {
+        Optional<EditorIngredient> input = RecipeAdapterSupport.simpleIngredient(ingredients.get(0));
+        Optional<EditorIngredient> output = RecipeAdapterSupport.simpleStack(recipe.getResultItem(registries));
+        if (!input.isPresent() && !RecipeAdapterSupport.isAirIngredient(ingredients.get(0))) {
             return Optional.empty();
         }
         if (!output.isPresent() || recipe.getExperience() < 0.0F
@@ -45,29 +43,24 @@ final class CookingRecipeEditorAdapter {
         properties.put("experience", Float.toString(recipe.getExperience()));
         properties.put("cooking_time", Integer.toString(recipe.getCookingTime()));
         return Optional.of(new EditorModel(holder.id().toString(), serializer.toString(),
-                fingerprint(holder.id(), serializer, slots, properties), slots, properties));
+                RecipeAdapterSupport.fingerprint(holder.id().toString(), serializer.toString(), slots, properties),
+                slots, properties));
     }
 
     static RecipePatch replaceInput(EditorModel model, String slotKey, ItemStack stack) {
-        Optional<EditorIngredient> ingredient = simpleStack(stack);
+        Optional<EditorIngredient> ingredient = RecipeAdapterSupport.simpleStack(stack);
         if (!ingredient.isPresent() || !"input.0".equals(slotKey)) {
             throw new IllegalArgumentException("only simple cooking input can be replaced");
         }
-        LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
-        fields.put("input.0.item", ingredient.get().itemId());
-        fields.put("input.0.count", Integer.toString(ingredient.get().count()));
-        return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
+        return RecipeAdapterSupport.slotPatch(model, "input.0", ingredient.get());
     }
 
     static RecipePatch replaceOutput(EditorModel model, ItemStack stack) {
-        Optional<EditorIngredient> ingredient = simpleStack(stack);
+        Optional<EditorIngredient> ingredient = RecipeAdapterSupport.simpleStack(stack);
         if (!ingredient.isPresent()) {
             throw new IllegalArgumentException("only simple output items can be used");
         }
-        LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
-        fields.put("output.item", ingredient.get().itemId());
-        fields.put("output.count", Integer.toString(ingredient.get().count()));
-        return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
+        return RecipeAdapterSupport.slotPatch(model, "output", ingredient.get());
     }
 
     static RecipePatch setOutputCount(EditorModel model, int count) {
@@ -91,54 +84,4 @@ final class CookingRecipeEditorAdapter {
                 || "minecraft:smoking".equals(serializerId) || "minecraft:campfire_cooking".equals(serializerId);
     }
 
-    private static Optional<EditorIngredient> simpleIngredient(Ingredient ingredient) {
-        if (ingredient == null || ingredient.isEmpty()) return Optional.empty();
-        ItemStack[] items = ingredient.getItems();
-        // JEI commonly exposes furnace inputs backed by an item tag, which
-        // expands to several stacks. The editor writes a concrete item when
-        // that slot is replaced, so use the first valid stack as the model's
-        // representative while leaving untouched ingredients intact on save.
-        for (ItemStack item : items) {
-            Optional<EditorIngredient> value = simpleStack(item);
-            if (value.isPresent()) {
-                return value;
-            }
-        }
-        return Optional.empty();
-    }
-
-    private static boolean isAirIngredient(Ingredient ingredient) {
-        if (ingredient == null || ingredient.isEmpty()) {
-            return false;
-        }
-        ItemStack[] items = ingredient.getItems();
-        return items.length == 1 && items[0].is(net.minecraft.world.item.Items.AIR);
-    }
-
-    private static Optional<EditorIngredient> simpleStack(ItemStack stack) {
-        if (stack == null || stack.isEmpty() || stack.getCount() < 1 || stack.getCount() > 64
-                || !stack.isComponentsPatchEmpty()) return Optional.empty();
-        ResourceLocation id = BuiltInRegistries.ITEM.getKey(stack.getItem());
-        return id == null ? Optional.<EditorIngredient>empty() : Optional.of(new EditorIngredient(id.toString(), stack.getCount()));
-    }
-
-    private static String fingerprint(ResourceLocation recipeId, ResourceLocation serializer,
-                                      List<EditorSlot> slots, Map<String, String> properties) {
-        StringBuilder value = new StringBuilder(recipeId.toString()).append('|').append(serializer);
-        for (EditorSlot slot : slots) {
-            value.append('|').append(slot.key()).append('=').append(slot.role());
-            if (slot.ingredient() != null) value.append(':').append(slot.ingredient().itemId()).append(':').append(slot.ingredient().count());
-        }
-        for (Map.Entry<String, String> property : properties.entrySet()) {
-            value.append('|').append(property.getKey()).append('=').append(property.getValue());
-        }
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(value.toString().getBytes(StandardCharsets.UTF_8));
-            StringBuilder result = new StringBuilder(digest.length * 2);
-            for (byte current : digest) result.append(String.format("%02x", current & 0xff));
-            return result.toString();
-        } catch (Exception exception) {
-            throw new IllegalStateException("SHA-256 is required", exception);
-        }
-    }
 }

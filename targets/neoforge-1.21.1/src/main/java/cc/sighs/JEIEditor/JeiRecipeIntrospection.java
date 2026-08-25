@@ -2,24 +2,29 @@ package cc.sighs.JEIEditor;
 
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
 import mezz.jei.api.gui.ingredient.IRecipeSlotDrawable;
+import mezz.jei.api.gui.inputs.RecipeSlotUnderMouse;
 import mezz.jei.api.gui.widgets.ITextWidget;
 import mezz.jei.api.gui.widgets.IRecipeWidget;
 import mezz.jei.api.ingredients.ITypedIngredient;
+import mezz.jei.api.constants.RecipeTypes;
 import mezz.jei.api.recipe.category.IRecipeCategory;
 import mezz.jei.api.recipe.IRecipeManager;
 import mezz.jei.api.runtime.IJeiRuntime;
 import mezz.jei.common.Internal;
 import mezz.jei.common.util.ImmutableRect2i;
+import mezz.jei.common.util.ImmutableSize2i;
 import mezz.jei.gui.bookmarks.BookmarkList;
 import mezz.jei.gui.recipes.IRecipeGuiLogic;
 import mezz.jei.gui.recipes.IRecipeLayoutWithButtons;
 import mezz.jei.gui.recipes.RecipeGuiLayouts;
 import mezz.jei.gui.recipes.RecipesGui;
+import mezz.jei.library.plugins.vanilla.crafting.CraftingRecipeCategory;
 import net.minecraft.client.renderer.Rect2i;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.navigation.ScreenPosition;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.crafting.CraftingRecipe;
 import net.minecraft.world.item.crafting.RecipeHolder;
 
 import java.lang.reflect.Field;
@@ -54,6 +59,8 @@ final class JeiRecipeIntrospection {
     private static Method ensureRecipeExtrasMethod;
     private static final Map<ITextWidget, ScreenPosition> hiddenRecipeTextPositions =
             new WeakHashMap<ITextWidget, ScreenPosition>();
+    private static final Map<IRecipeLayoutDrawable<?>, Map<IRecipeSlotDrawable, ScreenPosition>> slotOffsets =
+            new WeakHashMap<IRecipeLayoutDrawable<?>, Map<IRecipeSlotDrawable, ScreenPosition>>();
 
     private JeiRecipeIntrospection() {
     }
@@ -98,11 +105,76 @@ final class JeiRecipeIntrospection {
     @SuppressWarnings("removal")
     private static Rect2i screenArea(IRecipeLayoutDrawable<?> layout, IRecipeSlotDrawable slot,
                                      boolean includeBackground) {
-        Rect2i recipeArea = layout.getRect();
         Rect2i slotArea = includeBackground ? slot.getAreaIncludingBackground() : slot.getRect();
-        return new Rect2i(recipeArea.getX() + slotArea.getX(),
-                recipeArea.getY() + slotArea.getY(),
+        ScreenPosition offset = findSlotOffset(layout, slot);
+        return new Rect2i(offset.x() + slotArea.getX(),
+                offset.y() + slotArea.getY(),
                 slotArea.getWidth(), slotArea.getHeight());
+    }
+
+    /**
+     * Slots in JEI recipe widgets are positioned relative to their parent.
+     * RecipeSlotUnderMouse carries the parent offset all the way back to the
+     * screen; use it instead of assuming every slot is a direct child of the
+     * recipe layout. The direct-child path is checked first because it avoids
+     * a scan for the overwhelmingly common vanilla layouts.
+     */
+    @SuppressWarnings("removal")
+    private static ScreenPosition findSlotOffset(IRecipeLayoutDrawable<?> layout,
+                                                  IRecipeSlotDrawable slot) {
+        Rect2i recipeArea = layout.getRect();
+        Rect2i slotArea = slot.getRect();
+        int centerX = recipeArea.getX() + slotArea.getX() + Math.max(0, slotArea.getWidth() / 2);
+        int centerY = recipeArea.getY() + slotArea.getY() + Math.max(0, slotArea.getHeight() / 2);
+        Optional<RecipeSlotUnderMouse> direct = layout.getSlotUnderMouse(centerX, centerY);
+        if (direct.isPresent() && direct.get().slot() == slot) {
+            return direct.get().offset();
+        }
+
+        Map<IRecipeSlotDrawable, ScreenPosition> cached = slotOffsets.get(layout);
+        if (cached != null) {
+            ScreenPosition offset = cached.get(slot);
+            if (offset != null && isSlotAt(layout, slot, offset)) {
+                return offset;
+            }
+        }
+
+        // Nested widgets (for example JEI scroll grids) do not expose their
+        // parent position through IRecipeSlotDrawable. Probe the layout's
+        // actual input router; every normal slot is at least 16x16, so a
+        // one-pixel scan is bounded by the recipe rectangle and only runs for
+        // these non-direct slots.
+        int left = recipeArea.getX();
+        int top = recipeArea.getY();
+        int right = left + recipeArea.getWidth();
+        int bottom = top + recipeArea.getHeight();
+        for (int y = top; y < bottom; y++) {
+            for (int x = left; x < right; x++) {
+                Optional<RecipeSlotUnderMouse> hit = layout.getSlotUnderMouse(x, y);
+                if (hit.isPresent() && hit.get().slot() == slot) {
+                    ScreenPosition offset = hit.get().offset();
+                    if (cached == null) {
+                        cached = new WeakHashMap<IRecipeSlotDrawable, ScreenPosition>();
+                        slotOffsets.put(layout, cached);
+                    }
+                    cached.put(slot, offset);
+                    return offset;
+                }
+            }
+        }
+        // Preserve the old direct-child fallback if JEI changes its input
+        // routing or the slot is not currently visible in a scrolled widget.
+        return new ScreenPosition(recipeArea.getX(), recipeArea.getY());
+    }
+
+    @SuppressWarnings("removal")
+    private static boolean isSlotAt(IRecipeLayoutDrawable<?> layout, IRecipeSlotDrawable slot,
+                                    ScreenPosition offset) {
+        Rect2i rect = slot.getRect();
+        int x = offset.x() + rect.getX() + Math.max(0, rect.getWidth() / 2);
+        int y = offset.y() + rect.getY() + Math.max(0, rect.getHeight() / 2);
+        Optional<RecipeSlotUnderMouse> hit = layout.getSlotUnderMouse(x, y);
+        return hit.isPresent() && hit.get().slot() == slot;
     }
 
     static Optional<ItemStack> itemStack(ITypedIngredient<?> ingredient) {
@@ -301,6 +373,38 @@ final class JeiRecipeIntrospection {
             ResourceLocation id = ((IRecipeCategory) category).getRegistryName(recipe);
             return Optional.ofNullable(id);
         } catch (RuntimeException ignored) {
+            return Optional.empty();
+        }
+    }
+
+    /**
+     * Ask JEI's vanilla crafting category for the recipe dimensions. That
+     * category delegates to its registered crafting extensions, so custom
+     * crafting recipe classes use the same dimensions JEI drew instead of
+     * forcing the editor to reverse-engineer them from the raw recipe class.
+     */
+    static Optional<int[]> craftingGridDimensions(Object displayedRecipe) {
+        if (!(displayedRecipe instanceof RecipeHolder<?>)) {
+            return Optional.empty();
+        }
+        Optional<IJeiRuntime> runtime = Internal.getOptionalJeiRuntime();
+        if (!runtime.isPresent()) {
+            return Optional.empty();
+        }
+        try {
+            IRecipeCategory<?> category = runtime.get().getRecipeManager()
+                    .getRecipeCategory(RecipeTypes.CRAFTING);
+            if (!(category instanceof CraftingRecipeCategory)) {
+                return Optional.empty();
+            }
+            @SuppressWarnings("unchecked")
+            RecipeHolder<CraftingRecipe> holder = (RecipeHolder<CraftingRecipe>) (RecipeHolder<?>) displayedRecipe;
+            ImmutableSize2i size = ((CraftingRecipeCategory) category).getRecipeSize(holder);
+            if (size == null || size.width() < 1 || size.height() < 1) {
+                return Optional.empty();
+            }
+            return Optional.of(new int[] {size.width(), size.height()});
+        } catch (RuntimeException | LinkageError ignored) {
             return Optional.empty();
         }
     }

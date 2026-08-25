@@ -69,6 +69,14 @@ public final class ClientEditorEvents {
     /** Re-arm the edit switch after the physical left mouse button is released. */
     @SubscribeEvent
     public static void onMouseButtonReleased(ScreenEvent.MouseButtonReleased.Pre event) {
+        if (event.getButton() == 0 && event.getScreen() instanceof RecipesGui gui
+                && JeiIngredientDragController.complete(gui, event.getMouseX(), event.getMouseY())) {
+            event.setCanceled(true);
+            ClientEditorState.armToggle();
+            ClientEditorState.armActionClick();
+            ClientEditorState.clearGhostHighlightAreas();
+            return;
+        }
         if (event.getButton() == 0) {
             EditBox input = recipeIdInputs.get(event.getScreen());
             if (input != null && input.isMouseOver(event.getMouseX(), event.getMouseY())) {
@@ -135,6 +143,12 @@ public final class ClientEditorEvents {
                 event.setCanceled(true);
                 return;
             }
+            if (JeiIngredientDragController.start((RecipesGui) event.getScreen(),
+                    event.getMouseX(), event.getMouseY())) {
+                closeMenu(event.getScreen());
+                event.setCanceled(true);
+                return;
+            }
             closeMenu(event.getScreen());
         }
         if (!(event.getScreen() instanceof RecipesGui gui) || event.getButton() != 1) {
@@ -166,6 +180,16 @@ public final class ClientEditorEvents {
             openMenu(gui, event.getMouseX(), event.getMouseY(), Optional.empty(), false,
                     JeiRecipeEditorPlugin.recipeCreationTargetOnPage(gui));
             event.setCanceled(true);
+        }
+    }
+
+    @SubscribeEvent
+    public static void onMouseDragged(ScreenEvent.MouseDragged.Pre event) {
+        if (event.getMouseButton() == 0 && event.getScreen() instanceof RecipesGui gui) {
+            JeiIngredientDragController.update(gui, event.getMouseX(), event.getMouseY());
+            if (JeiIngredientDragController.drag(gui)) {
+                event.setCanceled(true);
+            }
         }
     }
 
@@ -254,6 +278,7 @@ public final class ClientEditorEvents {
     @SubscribeEvent
     public static void onScreenClosing(ScreenEvent.Closing event) {
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
+            JeiIngredientDragController.cancel((RecipesGui) event.getScreen());
             FuelCountInputController.close((RecipesGui) event.getScreen());
             initializedRecipeScreens.remove(event.getScreen());
             closeMenu(event.getScreen());
@@ -276,6 +301,11 @@ public final class ClientEditorEvents {
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
             JeiRecipeEditorPlugin.drawPendingSlotHighlights((RecipesGui) event.getScreen(), event.getGuiGraphics());
             ClientEditorState.drawGhostHighlights(event.getGuiGraphics(), event.getMouseX(), event.getMouseY());
+            event.getGuiGraphics().pose().pushPose();
+            event.getGuiGraphics().pose().translate(0.0D, 0.0D, 1000.0D);
+            JeiIngredientDragController.render(event.getGuiGraphics(), (RecipesGui) event.getScreen(),
+                    event.getMouseX(), event.getMouseY());
+            event.getGuiGraphics().pose().popPose();
             FuelCountInputController.render((RecipesGui) event.getScreen(), event.getGuiGraphics(),
                     event.getMouseX(), event.getMouseY());
             renderRecipeIdInput(event);

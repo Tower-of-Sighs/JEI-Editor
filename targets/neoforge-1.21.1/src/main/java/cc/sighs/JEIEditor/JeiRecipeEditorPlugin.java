@@ -62,10 +62,7 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             return true;
         } catch (IllegalArgumentException exception) {
             ClientEditorState.setLastDrop(exception.getMessage());
-            // The pointer was still over an input slot. Consume the click so
-            // a recipe deletion is not triggered when that input is handled
-            // by a serializer-specific adapter.
-            return true;
+            return false;
         }
     }
 
@@ -148,7 +145,7 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
                 String slotKey = RecipeGhostHandler.slotKey(slots.getSlotViews(),
                         (mezz.jei.api.gui.ingredient.IRecipeSlotDrawable) view,
                         displayedRecipe, model);
-                if (!isPatchedSlot(patch, slotKey)) {
+                if (!isPatchedSlot(patch, model, slotKey)) {
                     continue;
                 }
                 Rect2i screenArea = JeiRecipeIntrospection.screenTargetArea(
@@ -204,10 +201,31 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         }
     }
 
-    private static boolean isPatchedSlot(RecipePatch patch, String slotKey) {
-        return slotKey != null && (patch.fields().containsKey(slotKey + ".item")
-                || patch.fields().containsKey(slotKey + ".count")
-                || (FuelRecipeEditorAdapter.isFuelPatch(patch) && "input.0".equals(slotKey)));
+    private static boolean isPatchedSlot(RecipePatch patch, EditorModel model, String slotKey) {
+        if (patch == null || model == null || slotKey == null) {
+            return false;
+        }
+        if (FuelRecipeEditorAdapter.isFuelPatch(patch) && "input.0".equals(slotKey)) {
+            String burnTime = patch.fields().get("fuel.burn_time");
+            return burnTime != null && !burnTime.equals(model.properties().get("burn_time"));
+        }
+        cc.sighs.JEIEditor.editor.EditorSlot original = model.slots().stream()
+                .filter(slot -> slotKey.equals(slot.key()))
+                .findFirst()
+                .orElse(null);
+        if (original == null) {
+            return false;
+        }
+        cc.sighs.JEIEditor.editor.EditorIngredient ingredient = original.ingredient();
+        String item = patch.fields().get(slotKey + ".item");
+        String count = patch.fields().get(slotKey + ".count");
+        boolean itemChanged = item != null && (ingredient == null
+                ? !"minecraft:air".equals(item)
+                : !item.equals(ingredient.itemId()));
+        boolean countChanged = count != null && (ingredient == null
+                ? !"0".equals(count)
+                : !count.equals(Integer.toString(ingredient.count())));
+        return itemChanged || countChanged;
     }
 
     private static boolean matchesRecipe(Object displayedRecipe, IRecipeCategory<?> category, String recipeId) {
@@ -264,6 +282,57 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * Returns the currently displayed item in the recipe slot under the
+     * pointer. Display overrides are already reflected by JEI's slot view, so
+     * dragging a locally edited item uses exactly what the player sees.
+     */
+    static Optional<ItemStack> editorItemAtMouse(RecipesGui gui, double mouseX, double mouseY) {
+        Optional<RecipeTarget> target = resolveTarget(gui, mouseX, mouseY);
+        if (!target.isPresent() || ClientEditorState.isRecipeDeleted(target.get().model.recipeId())) {
+            return Optional.empty();
+        }
+        for (mezz.jei.api.gui.ingredient.IRecipeSlotView view : target.get().slots.getSlotViews()) {
+            if (view.getRole() != RecipeIngredientRole.INPUT
+                    && view.getRole() != RecipeIngredientRole.OUTPUT) {
+                continue;
+            }
+            if (!(view instanceof mezz.jei.api.gui.ingredient.IRecipeSlotDrawable)) {
+                continue;
+            }
+            String slotKey = RecipeGhostHandler.slotKey(target.get().slots.getSlotViews(),
+                    (mezz.jei.api.gui.ingredient.IRecipeSlotDrawable) view,
+                    target.get().recipe, target.get().model);
+            if (target.get().slotKey.equals(slotKey)) {
+                return view.getDisplayedItemStack().map(ItemStack::copy);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /** Applies a dragged editor item to the editable slot under the pointer. */
+    static boolean replaceItemAtMouse(RecipesGui gui, double mouseX, double mouseY, ItemStack stack) {
+        if (stack == null || stack.isEmpty()) {
+            return false;
+        }
+        Optional<RecipeTarget> target = resolveTarget(gui, mouseX, mouseY);
+        if (!target.isPresent() || ClientEditorState.isRecipeDeleted(target.get().model.recipeId())) {
+            return false;
+        }
+        try {
+            ClientEditorState.rememberTarget(target.get().model, target.get().slotKey,
+                    target.get().slots, target.get().recipe);
+            ClientEditorState.setPendingPatch(RecipeEditorAdapters.replaceSlot(
+                    target.get().model, target.get().slotKey, stack));
+            ClientEditorState.setLastDrop("Moved " + stack.getHoverName().getString()
+                    + " to " + target.get().slotKey);
+            return true;
+        } catch (IllegalArgumentException exception) {
+            ClientEditorState.setLastDrop(exception.getMessage());
+            return false;
+        }
     }
 
     static Optional<EditorModel> recipeDeletionTargetAtMouse(
