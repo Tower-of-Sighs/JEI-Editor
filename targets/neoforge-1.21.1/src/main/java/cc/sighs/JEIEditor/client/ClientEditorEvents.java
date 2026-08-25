@@ -1,17 +1,22 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.client;
 
 import cc.sighs.JEIEditor.editor.EditorModel;
+import cc.sighs.JEIEditor.JEIEditorNeoForge121;
+import cc.sighs.JEIEditor.platform.network.NeoForge121Network;
 import mezz.jei.gui.recipes.RecipesGui;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
 import net.minecraft.network.chat.Component;
+import net.minecraft.sounds.SoundEvents;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.RecipesUpdatedEvent;
 import net.neoforged.neoforge.client.event.ScreenEvent;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.WeakHashMap;
@@ -20,21 +25,13 @@ import java.util.WeakHashMap;
 public final class ClientEditorEvents {
     private static final int RECIPE_ID_INPUT_WIDTH = 110;
     private static final int RECIPE_ID_INPUT_HEIGHT = 14;
-    /** ScreenEvent.Init.Post can be delivered more than once for one JEI screen. */
-    private static final Map<net.minecraft.client.gui.screens.Screen, Button> editButtons =
-            new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
-    private static final Map<net.minecraft.client.gui.screens.Screen, Button> saveButtons =
-            new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
-    private static final Map<net.minecraft.client.gui.screens.Screen, Button> reloadButtons =
-            new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
-    private static final Map<net.minecraft.client.gui.screens.Screen, Button> resetButtons =
-            new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
-    private static final Map<net.minecraft.client.gui.screens.Screen, Button> deleteButtons =
-            new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
-    private static final Map<net.minecraft.client.gui.screens.Screen, Button> clearInputButtons =
-            new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
-    private static final Map<net.minecraft.client.gui.screens.Screen, Button> newRecipeButtons =
-            new WeakHashMap<net.minecraft.client.gui.screens.Screen, Button>();
+    private static final int MENU_WIDTH = 148;
+    private static final int MENU_ROW_HEIGHT = 17;
+    private static final int MENU_BORDER = 1;
+    private static final int MENU_TEXT_PADDING = 7;
+    private static final float MENU_TEXT_SCALE = 0.8F;
+    private static final Map<net.minecraft.client.gui.screens.Screen, MenuState> menus =
+            new WeakHashMap<net.minecraft.client.gui.screens.Screen, MenuState>();
     private static final Map<net.minecraft.client.gui.screens.Screen, EditBox> recipeIdInputs =
             new WeakHashMap<net.minecraft.client.gui.screens.Screen, EditBox>();
     private static final Map<net.minecraft.client.gui.screens.Screen, Boolean> initializedRecipeScreens =
@@ -54,7 +51,7 @@ public final class ClientEditorEvents {
         }
     }
 
-    private static void pressEditButton(net.minecraft.client.gui.screens.Screen screen, Button button) {
+    private static void pressEdit(net.minecraft.client.gui.screens.Screen screen) {
         if (ClientEditorState.toggleFromButton()) {
             if (!ClientEditorState.isEditing()) {
                 ClientEditorState.clearPendingPatch();
@@ -63,7 +60,6 @@ public final class ClientEditorEvents {
                 ClientEditorState.setLastDrop("");
             }
         }
-        button.setMessage(label());
     }
 
     /** Re-arm the edit switch after the physical left mouse button is released. */
@@ -90,7 +86,7 @@ public final class ClientEditorEvents {
         }
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
             if (event.getButton() == 0
-                    && buttonUnderMouse(event.getScreen(), event.getMouseX(), event.getMouseY()) != null) {
+                    && menuItemUnderMouse(event.getScreen(), event.getMouseX(), event.getMouseY()) != null) {
                 // The editor invokes its button from MouseButtonPressed.Pre.
                 // Do not let JEI execute the same physical click again on
                 // release, which can also trigger its page navigation/close.
@@ -130,15 +126,12 @@ public final class ClientEditorEvents {
             }
         }
         if (event.getButton() == 0 && ClientEditorState.isRecipeScreen(event.getScreen())) {
-            Button button = buttonUnderMouse(event.getScreen(), event.getMouseX(), event.getMouseY());
-            if (button != null) {
+            MenuItem item = menuItemUnderMouse(event.getScreen(), event.getMouseX(), event.getMouseY());
+            if (item != null) {
                 if (ClientEditorState.consumeActionClick()) {
-                    button.playDownSound(Minecraft.getInstance().getSoundManager());
-                    if (button == editButtons.get(event.getScreen())) {
-                        pressEditButton(event.getScreen(), button);
-                    } else {
-                        button.onPress();
-                    }
+                    playMenuClick();
+                    item.activate();
+                    closeMenu(event.getScreen());
                 }
                 event.setCanceled(true);
                 return;
@@ -395,36 +388,48 @@ public final class ClientEditorEvents {
      * cover it. */
     private static void renderMenuAboveJei(ScreenEvent.Render.Post event) {
         net.minecraft.client.gui.screens.Screen screen = event.getScreen();
-        Button edit = editButtons.get(screen);
-        if (edit == null) {
+        MenuState menu = menus.get(screen);
+        if (menu == null) {
             return;
         }
+        net.minecraft.client.gui.Font font = Minecraft.getInstance().font;
+        double mouseX = event.getMouseX();
+        double mouseY = event.getMouseY();
+        int bottom = menu.y + menu.height;
         event.getGuiGraphics().pose().pushPose();
         event.getGuiGraphics().pose().translate(0.0D, 0.0D, 1000.0D);
-        edit.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), 0.0F);
-        Button save = saveButtons.get(screen);
-        if (save != null) {
-            save.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), 0.0F);
-        }
-        Button reload = reloadButtons.get(screen);
-        if (reload != null) {
-            reload.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), 0.0F);
-        }
-        Button reset = resetButtons.get(screen);
-        if (reset != null) {
-            reset.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), 0.0F);
-        }
-        Button delete = deleteButtons.get(screen);
-        if (delete != null) {
-            delete.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), 0.0F);
-        }
-        Button clearInput = clearInputButtons.get(screen);
-        if (clearInput != null) {
-            clearInput.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), 0.0F);
-        }
-        Button newRecipe = newRecipeButtons.get(screen);
-        if (newRecipe != null) {
-            newRecipe.render(event.getGuiGraphics(), event.getMouseX(), event.getMouseY(), 0.0F);
+        // A small shadow and a restrained dark panel keep the menu distinct
+        // from both JEI and the vanilla button style.
+        event.getGuiGraphics().fill(menu.x + 2, menu.y + 2, menu.x + menu.width + 2,
+                bottom + 2, 0x55000000);
+        event.getGuiGraphics().fill(menu.x, menu.y, menu.x + menu.width, bottom, 0xEE11171C);
+        event.getGuiGraphics().fill(menu.x, menu.y, menu.x + menu.width, menu.y + MENU_BORDER,
+                0xFF60717D);
+        event.getGuiGraphics().fill(menu.x, bottom - MENU_BORDER, menu.x + menu.width, bottom,
+                0xFF34434D);
+        event.getGuiGraphics().fill(menu.x, menu.y, menu.x + MENU_BORDER, bottom, 0xFF53636E);
+        event.getGuiGraphics().fill(menu.x + menu.width - MENU_BORDER, menu.y,
+                menu.x + menu.width, bottom, 0xFF34434D);
+        for (int index = 0; index < menu.items.size(); index++) {
+            MenuItem item = menu.items.get(index);
+            boolean hovered = item.contains(mouseX, mouseY);
+            if (hovered) {
+                event.getGuiGraphics().fill(item.x, item.y, item.x + item.width,
+                        item.y + item.height, 0xFF2C4658);
+            } else if ((index & 1) == 1) {
+                event.getGuiGraphics().fill(item.x, item.y, item.x + item.width,
+                        item.y + item.height, 0xFF151E24);
+            }
+            if (index > 0) {
+                event.getGuiGraphics().fill(menu.x + MENU_BORDER, item.y,
+                        menu.x + menu.width - MENU_BORDER, item.y + 1, 0xFF293740);
+            }
+            event.getGuiGraphics().pose().pushPose();
+            event.getGuiGraphics().pose().translate(item.x + MENU_TEXT_PADDING, item.y + 4, 0.0D);
+            event.getGuiGraphics().pose().scale(MENU_TEXT_SCALE, MENU_TEXT_SCALE, 1.0F);
+            event.getGuiGraphics().drawString(font, Component.literal(item.label), 0, 0,
+                    hovered ? 0xFFFFFFFF : 0xFFE1E7EA, false);
+            event.getGuiGraphics().pose().popPose();
         }
         event.getGuiGraphics().pose().popPose();
     }
@@ -433,21 +438,19 @@ public final class ClientEditorEvents {
                                  Optional<EditorModel> deletionTarget, boolean clearableInput,
                                  Optional<EditorModel> creationTarget) {
         closeMenu(screen);
-        int width = 130;
-        int height = 80 + (clearableInput ? 20 : 0) + (deletionTarget.isPresent() ? 20 : 0)
-                + 20;
-        int x = Math.max(2, Math.min(screen.width - width - 2, (int) mouseX));
-        int y = Math.max(2, Math.min(screen.height - height - 2, (int) mouseY));
-        Button edit = Button.builder(label(), button -> {
-            pressEditButton(screen, button);
-            closeMenu(screen);
-        }).bounds(x, y, width, 20).build();
-        Button save = Button.builder(Component.literal("Save"), button -> {
-            if (!ClientEditorState.isEditing()) {
-                ClientEditorState.setLastDrop("Enable edit mode first");
-            } else if (ClientEditorState.getPendingPatches().isEmpty()) {
-                ClientEditorState.setLastDrop("No pending recipe edit");
-            } else {
+        List<MenuItem> items = new ArrayList<MenuItem>();
+        items.add(new MenuItem(label().getString(), () -> pressEdit(screen)));
+
+        // Reload is intentionally available in view mode. All other editing
+        // actions are hidden until the client-side switch is enabled.
+        if (!ClientEditorState.isEditing()) {
+            items.add(new MenuItem("Reload", () -> reload(screen)));
+        } else {
+            items.add(new MenuItem("Save", () -> {
+                if (ClientEditorState.getPendingPatches().isEmpty()) {
+                    ClientEditorState.setLastDrop("No pending recipe edit");
+                    return;
+                }
                 if (ClientEditorState.hasCreationDraft(screen)) {
                     EditBox input = recipeIdInputs.get(screen);
                     String error = ClientEditorState.renameCreationDraft(screen,
@@ -462,146 +465,137 @@ public final class ClientEditorEvents {
                 ClientEditorState.markSaveSubmittedPatches(patches);
                 NeoForge121Network.send(patches);
                 ClientEditorState.setLastDrop("Recipe edits saved; reload separately to apply");
-            }
-        }).bounds(x, y + 20, width, 20).build();
-        Button reload = Button.builder(Component.literal("Reload"), button -> {
-            if (!ClientEditorState.isEditing()) {
-                ClientEditorState.setLastDrop("Enable edit mode first");
-            } else {
-                NeoForge121Network.sendReload();
-                ClientEditorState.setLastDrop("Saved recipe edits reload submitted");
-                screen.onClose();
-            }
-        }).bounds(x, y + 40, width, 20).build();
-        Button reset = Button.builder(Component.literal("Reset Page Changes"), button -> {
-                if (screen instanceof RecipesGui) {
+            }));
+            items.add(new MenuItem("Reload", () -> reload(screen)));
+            items.add(new MenuItem("Reset Page Changes", () -> {
                 ClientEditorState.clearPendingPatches(screen,
-                        JeiRecipeEditorPlugin.currentPageRecipeIds((RecipesGui) screen));
+                        JeiRecipeEditorPlugin.currentPageRecipeIds(screen));
+                ClientEditorState.setLastDrop("Current page changes reset");
+                closeRecipeIdInput(screen);
+            }));
+            if (clearableInput) {
+                items.add(new MenuItem("Clear Input Slot", () ->
+                        JeiRecipeEditorPlugin.clearInputAtMouse(screen, mouseX, mouseY)));
             }
-            ClientEditorState.setLastDrop("Current page changes reset");
-            closeRecipeIdInput(screen);
-            closeMenu(screen);
-        }).bounds(x, y + 60, width, 20).build();
-        editButtons.put(screen, edit);
-        saveButtons.put(screen, save);
-        reloadButtons.put(screen, reload);
-        resetButtons.put(screen, reset);
-        int actionY = y + 80;
-        if (clearableInput) {
-            Button clearInput = Button.builder(Component.literal("Clear Input Slot"), button -> {
-                if (!ClientEditorState.isEditing()) {
-                    ClientEditorState.setLastDrop("Enable edit mode first");
-                } else {
-                    JeiRecipeEditorPlugin.clearInputAtMouse(screen, mouseX, mouseY);
-                }
-                closeMenu(screen);
-            }).bounds(x, actionY, width, 20).build();
-            clearInputButtons.put(screen, clearInput);
-            actionY += 20;
-        }
-        if (deletionTarget.isPresent()) {
-            EditorModel target = deletionTarget.get();
-            boolean deleted = ClientEditorState.isRecipeDeleted(target.recipeId());
-            Button delete = Button.builder(Component.literal(
-                    deleted ? "Cancel Recipe Delete" : "Delete Recipe"), button -> {
-                if (!ClientEditorState.isEditing()) {
-                    ClientEditorState.setLastDrop("Enable edit mode first");
-                } else if (ClientEditorState.isRecipeDeleted(target.recipeId())) {
-                    ClientEditorState.cancelRecipeDeletion(target.recipeId());
-                    ClientEditorState.setLastDrop("Recipe deletion canceled: " + target.recipeId());
-                } else {
-                    ClientEditorState.deleteRecipe(target);
-                    ClientEditorState.setLastDrop("Recipe marked for deletion: " + target.recipeId());
-                }
-                closeMenu(screen);
-            }).bounds(x, actionY, width, 20).build();
-            deleteButtons.put(screen, delete);
-            actionY += 20;
-        }
-        boolean creationStaged = creationTarget.isPresent()
-                && ClientEditorState.isCreationStaged(creationTarget.get().recipeId());
-        Button newRecipe = Button.builder(Component.literal(
-                creationStaged ? "Cancel New Recipe" : "New Recipe"), button -> {
-            if (!ClientEditorState.isEditing()) {
-                ClientEditorState.setLastDrop("Enable edit mode first");
-            } else if (!creationTarget.isPresent()) {
-                ClientEditorState.setLastDrop("Select a supported recipe to create a new one");
-            } else {
-                EditorModel target = creationTarget.get();
-                try {
-                    if (ClientEditorState.isCreationStaged(target.recipeId())) {
-                        if (ClientEditorState.cancelCreationDraft(screen, target.recipeId())) {
-                            closeRecipeIdInput(screen);
-                            ClientEditorState.setLastDrop("New recipe canceled");
-                        }
+            if (deletionTarget.isPresent()) {
+                EditorModel target = deletionTarget.get();
+                boolean deleted = ClientEditorState.isRecipeDeleted(target.recipeId());
+                items.add(new MenuItem(deleted ? "Cancel Recipe Delete" : "Delete Recipe", () -> {
+                    if (ClientEditorState.isRecipeDeleted(target.recipeId())) {
+                        ClientEditorState.cancelRecipeDeletion(target.recipeId());
+                        ClientEditorState.setLastDrop("Recipe deletion canceled: " + target.recipeId());
                     } else {
-                        ClientEditorState.createRecipe(screen, target);
-                        openRecipeIdInput(screen);
-                        ClientEditorState.setLastDrop("New recipe ready. Fill inputs, then Save.");
+                        ClientEditorState.deleteRecipe(target);
+                        ClientEditorState.setLastDrop("Recipe marked for deletion: " + target.recipeId());
                     }
-                } catch (IllegalArgumentException exception) {
-                    ClientEditorState.setLastDrop(exception.getMessage());
-                }
+                }));
             }
-            closeMenu(screen);
-        }).bounds(x, actionY, width, 20).build();
-        newRecipeButtons.put(screen, newRecipe);
-        // These controls are rendered and dispatched exclusively by the
-        // editor event handlers. Keeping them out of Screen.renderables avoids
-        // vanilla's second mouse dispatch and duplicate click sounds.
+            if (creationTarget.isPresent()) {
+                EditorModel target = creationTarget.get();
+                boolean creationStaged = ClientEditorState.isCreationStaged(target.recipeId());
+                items.add(new MenuItem(creationStaged ? "Cancel New Recipe" : "New Recipe", () -> {
+                    try {
+                        if (ClientEditorState.isCreationStaged(target.recipeId())) {
+                            if (ClientEditorState.cancelCreationDraft(screen, target.recipeId())) {
+                                closeRecipeIdInput(screen);
+                                ClientEditorState.setLastDrop("New recipe canceled");
+                            }
+                        } else {
+                            ClientEditorState.createRecipe(screen, target);
+                            openRecipeIdInput(screen);
+                            ClientEditorState.setLastDrop("New recipe ready. Fill inputs, then Save.");
+                        }
+                    } catch (IllegalArgumentException exception) {
+                        ClientEditorState.setLastDrop(exception.getMessage());
+                    }
+                }));
+            }
+        }
+        int height = MENU_BORDER * 2 + items.size() * MENU_ROW_HEIGHT;
+        int x = Math.max(2, Math.min(screen.width - MENU_WIDTH - 2, (int) mouseX));
+        int y = Math.max(2, Math.min(screen.height - height - 2, (int) mouseY));
+        for (int index = 0; index < items.size(); index++) {
+            MenuItem item = items.get(index);
+            item.x = x + MENU_BORDER;
+            item.y = y + MENU_BORDER + index * MENU_ROW_HEIGHT;
+            item.width = MENU_WIDTH - MENU_BORDER * 2;
+            item.height = MENU_ROW_HEIGHT;
+        }
+        menus.put(screen, new MenuState(x, y, MENU_WIDTH, height, items));
+    }
+
+    private static void reload(net.minecraft.client.gui.screens.Screen screen) {
+        NeoForge121Network.sendReload();
+        ClientEditorState.setLastDrop("Saved recipe edits reload submitted");
+        screen.onClose();
+    }
+
+    private static void playMenuClick() {
+        Minecraft.getInstance().getSoundManager().play(
+                SimpleSoundInstance.forUI(SoundEvents.UI_BUTTON_CLICK, 1.0F));
     }
 
     private static boolean isMenuOpen(net.minecraft.client.gui.screens.Screen screen) {
-        return editButtons.containsKey(screen);
+        return menus.containsKey(screen);
     }
 
     private static void closeMenu(net.minecraft.client.gui.screens.Screen screen) {
-        Button edit = editButtons.remove(screen);
-        Button save = saveButtons.remove(screen);
-        Button reload = reloadButtons.remove(screen);
-        Button reset = resetButtons.remove(screen);
-        Button delete = deleteButtons.remove(screen);
-        Button clearInput = clearInputButtons.remove(screen);
-        Button newRecipe = newRecipeButtons.remove(screen);
-        if (edit != null) screen.renderables.remove(edit);
-        if (save != null) screen.renderables.remove(save);
-        if (reload != null) screen.renderables.remove(reload);
-        if (reset != null) screen.renderables.remove(reset);
-        if (delete != null) screen.renderables.remove(delete);
-        if (clearInput != null) screen.renderables.remove(clearInput);
-        if (newRecipe != null) screen.renderables.remove(newRecipe);
+        menus.remove(screen);
     }
 
-    private static Button buttonUnderMouse(net.minecraft.client.gui.screens.Screen screen,
-                                           double mouseX, double mouseY) {
-        Button editButton = editButtons.get(screen);
-        if (editButton != null && editButton.isMouseOver(mouseX, mouseY)) {
-            return editButton;
+    private static MenuItem menuItemUnderMouse(net.minecraft.client.gui.screens.Screen screen,
+                                               double mouseX, double mouseY) {
+        MenuState menu = menus.get(screen);
+        if (menu == null) {
+            return null;
         }
-        Button saveButton = saveButtons.get(screen);
-        if (saveButton != null && saveButton.isMouseOver(mouseX, mouseY)) {
-            return saveButton;
-        }
-        Button reloadButton = reloadButtons.get(screen);
-        if (reloadButton != null && reloadButton.isMouseOver(mouseX, mouseY)) {
-            return reloadButton;
-        }
-        Button resetButton = resetButtons.get(screen);
-        if (resetButton != null && resetButton.isMouseOver(mouseX, mouseY)) {
-            return resetButton;
-        }
-        Button deleteButton = deleteButtons.get(screen);
-        if (deleteButton != null && deleteButton.isMouseOver(mouseX, mouseY)) {
-            return deleteButton;
-        }
-        Button clearInputButton = clearInputButtons.get(screen);
-        if (clearInputButton != null && clearInputButton.isMouseOver(mouseX, mouseY)) {
-            return clearInputButton;
-        }
-        Button newRecipeButton = newRecipeButtons.get(screen);
-        if (newRecipeButton != null && newRecipeButton.isMouseOver(mouseX, mouseY)) {
-            return newRecipeButton;
+        for (MenuItem item : menu.items) {
+            if (item.contains(mouseX, mouseY)) {
+                return item;
+            }
         }
         return null;
+    }
+
+    private interface MenuAction {
+        void run();
+    }
+
+    private static final class MenuItem {
+        private final String label;
+        private final MenuAction action;
+        private int x;
+        private int y;
+        private int width;
+        private int height;
+
+        private MenuItem(String label, MenuAction action) {
+            this.label = label;
+            this.action = action;
+        }
+
+        private boolean contains(double mouseX, double mouseY) {
+            return mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + height;
+        }
+
+        private void activate() {
+            action.run();
+        }
+    }
+
+    private static final class MenuState {
+        private final int x;
+        private final int y;
+        private final int width;
+        private final int height;
+        private final List<MenuItem> items;
+
+        private MenuState(int x, int y, int width, int height, List<MenuItem> items) {
+            this.x = x;
+            this.y = y;
+            this.width = width;
+            this.height = height;
+            this.items = items;
+        }
     }
 }

@@ -1,4 +1,4 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.client;
 
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
 import mezz.jei.api.gui.ingredient.IRecipeSlotDrawable;
@@ -45,7 +45,7 @@ import java.util.WeakHashMap;
  * private access is intentionally isolated here so the editor does not grow
  * version-specific reflection throughout its input and rendering code.
  */
-final class JeiRecipeIntrospection {
+public final class JeiRecipeIntrospection {
     private static Field recipesGuiLayoutsField;
     private static Field recipeLayoutsListField;
     private static Field recipesGuiLogicField;
@@ -383,7 +383,7 @@ final class JeiRecipeIntrospection {
      * crafting recipe classes use the same dimensions JEI drew instead of
      * forcing the editor to reverse-engineer them from the raw recipe class.
      */
-    static Optional<int[]> craftingGridDimensions(Object displayedRecipe) {
+    public static Optional<int[]> craftingGridDimensions(Object displayedRecipe) {
         if (!(displayedRecipe instanceof RecipeHolder<?>)) {
             return Optional.empty();
         }

@@ -1,4 +1,4 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.platform.recipe;
 
 import cc.sighs.JEIEditor.editor.EditorIngredient;
 import cc.sighs.JEIEditor.editor.EditorModel;
@@ -26,11 +26,11 @@ import java.util.Optional;
 
 /** Adapter for vanilla crafting recipes. Tag ingredients use a representative
  * item in the client model and are preserved until that slot is edited. */
-final class CraftingRecipeEditorAdapter {
+public final class CraftingRecipeEditorAdapter {
     private CraftingRecipeEditorAdapter() {
     }
 
-    static Optional<EditorModel> createModel(RecipeHolder<?> holder, HolderLookup.Provider registries) {
+    public static Optional<EditorModel> createModel(RecipeHolder<?> holder, HolderLookup.Provider registries) {
         Recipe<?> recipe = holder.value();
         if (!(recipe instanceof ShapedRecipe) && !(recipe instanceof ShapelessRecipe)) {
             return Optional.empty();
@@ -102,7 +102,7 @@ final class CraftingRecipeEditorAdapter {
         return Optional.of(new EditorModel(holder.id().toString(), serializerId.toString(), fingerprint, slots));
     }
 
-    static RecipePatch replaceInput(EditorModel model, String slotKey, ItemStack stack) {
+    public static RecipePatch replaceInput(EditorModel model, String slotKey, ItemStack stack) {
         Optional<EditorIngredient> ingredient = RecipeAdapterSupport.simpleStack(stack);
         if (!ingredient.isPresent() || !slotKey.startsWith("input.")) {
             throw new IllegalArgumentException("only simple input slots can be replaced");
@@ -110,7 +110,7 @@ final class CraftingRecipeEditorAdapter {
         return RecipeAdapterSupport.slotPatch(model, slotKey, ingredient.get());
     }
 
-    static RecipePatch replaceOutput(EditorModel model, ItemStack stack) {
+    public static RecipePatch replaceOutput(EditorModel model, ItemStack stack) {
         Optional<EditorIngredient> ingredient = RecipeAdapterSupport.simpleStack(stack);
         if (!ingredient.isPresent()) {
             throw new IllegalArgumentException("only simple output items can be used");
@@ -118,7 +118,7 @@ final class CraftingRecipeEditorAdapter {
         return RecipeAdapterSupport.slotPatch(model, "output", ingredient.get());
     }
 
-    static RecipePatch clearSlot(EditorModel model, String slotKey) {
+    public static RecipePatch clearSlot(EditorModel model, String slotKey) {
         if (!("minecraft:crafting_shaped".equals(model.serializerId())
                 || "minecraft:crafting_shapeless".equals(model.serializerId()))
                 || !slotKey.startsWith("input.")) {
@@ -130,7 +130,7 @@ final class CraftingRecipeEditorAdapter {
         return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
     }
 
-    static RecipePatch setOutputCount(EditorModel model, int count) {
+    public static RecipePatch setOutputCount(EditorModel model, int count) {
         if (count < 1 || count > 64) {
             throw new IllegalArgumentException("output count must be between 1 and 64");
         }
@@ -139,7 +139,7 @@ final class CraftingRecipeEditorAdapter {
         return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
     }
 
-    static EditorModel withGridDimensions(EditorModel model, int width, int height) {
+    public static EditorModel withGridDimensions(EditorModel model, int width, int height) {
         if (!"minecraft:crafting_shaped".equals(model.serializerId())
                 || model.properties().containsKey("grid_width")) {
             return model;

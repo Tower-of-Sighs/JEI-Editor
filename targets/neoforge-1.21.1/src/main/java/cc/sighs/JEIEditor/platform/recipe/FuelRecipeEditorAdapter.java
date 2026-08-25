@@ -1,4 +1,6 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.platform.recipe;
+
+import cc.sighs.JEIEditor.JEIEditorNeoForge121;
 
 import cc.sighs.JEIEditor.editor.EditorIngredient;
 import cc.sighs.JEIEditor.editor.EditorModel;
@@ -15,19 +17,19 @@ import java.util.List;
 import java.util.Optional;
 
 /** Adapter for JEI's generated furnace-fuel entries. */
-final class FuelRecipeEditorAdapter {
-    static final String SERIALIZER = "neoforge:furnace_fuel";
+public final class FuelRecipeEditorAdapter {
+    public static final String SERIALIZER = "neoforge:furnace_fuel";
     private static final String RECIPE_NAMESPACE = JEIEditorNeoForge121.MOD_ID;
     private static final String RECIPE_PREFIX = "fuel/";
 
     private FuelRecipeEditorAdapter() {
     }
 
-    static boolean isFuelRecipe(Object recipe) {
+    public static boolean isFuelRecipe(Object recipe) {
         return recipe instanceof IJeiFuelingRecipe;
     }
 
-    static Optional<EditorModel> createModel(IJeiFuelingRecipe recipe) {
+    public static Optional<EditorModel> createModel(IJeiFuelingRecipe recipe) {
         if (recipe == null || recipe.getInputs() == null || recipe.getInputs().size() != 1
                 || recipe.getBurnTime() < 1) {
             return Optional.empty();
@@ -43,7 +45,7 @@ final class FuelRecipeEditorAdapter {
         return Optional.of(createModel(itemId, recipe.getBurnTime(), stack.getCount()));
     }
 
-    static EditorModel createModel(ResourceLocation itemId, int burnTime) {
+    public static EditorModel createModel(ResourceLocation itemId, int burnTime) {
         return createModel(itemId, burnTime, 1);
     }
 
@@ -58,11 +60,11 @@ final class FuelRecipeEditorAdapter {
                 RecipeAdapterSupport.fingerprint(recipeId, SERIALIZER, slots, properties), slots, properties);
     }
 
-    static RecipePatch setBurnTime(EditorModel model, int burnTime) {
+    public static RecipePatch setBurnTime(EditorModel model, int burnTime) {
         return setBurnTime(model, burnTime, model.baseFingerprint());
     }
 
-    static RecipePatch setBurnTime(EditorModel model, int burnTime, String baseFingerprint) {
+    public static RecipePatch setBurnTime(EditorModel model, int burnTime, String baseFingerprint) {
         if (model == null || !SERIALIZER.equals(model.serializerId())) {
             throw new IllegalArgumentException("not a furnace fuel entry");
         }
@@ -81,18 +83,18 @@ final class FuelRecipeEditorAdapter {
         return new RecipePatch(model.recipeId(), SERIALIZER, baseFingerprint, fields);
     }
 
-    static boolean isFuelPatch(RecipePatch patch) {
+    public static boolean isFuelPatch(RecipePatch patch) {
         return patch != null && SERIALIZER.equals(patch.serializerId())
                 && patch.fields().containsKey("input.0.item")
                 && patch.fields().containsKey("fuel.burn_time");
     }
 
-    static ResourceLocation recipeId(ResourceLocation itemId) {
+    public static ResourceLocation recipeId(ResourceLocation itemId) {
         return ResourceLocation.fromNamespaceAndPath(RECIPE_NAMESPACE,
                 RECIPE_PREFIX + itemId.getNamespace() + "/" + itemId.getPath());
     }
 
-    static Optional<ResourceLocation> itemIdFromRecipeId(String recipeId) {
+    public static Optional<ResourceLocation> itemIdFromRecipeId(String recipeId) {
         ResourceLocation id = ResourceLocation.tryParse(recipeId);
         if (id == null || !RECIPE_NAMESPACE.equals(id.getNamespace())
                 || !id.getPath().startsWith(RECIPE_PREFIX)) {
@@ -107,7 +109,7 @@ final class FuelRecipeEditorAdapter {
                 encoded.substring(0, separator) + ":" + encoded.substring(separator + 1)));
     }
 
-    static Optional<ResourceLocation> itemId(RecipePatch patch) {
+    public static Optional<ResourceLocation> itemId(RecipePatch patch) {
         if (!isFuelPatch(patch)) {
             return Optional.empty();
         }
@@ -116,7 +118,7 @@ final class FuelRecipeEditorAdapter {
                 ? Optional.<ResourceLocation>empty() : Optional.of(itemId);
     }
 
-    static int burnTime(RecipePatch patch) {
+    public static int burnTime(RecipePatch patch) {
         try {
             return Integer.parseInt(patch.fields().get("fuel.burn_time"));
         } catch (RuntimeException exception) {

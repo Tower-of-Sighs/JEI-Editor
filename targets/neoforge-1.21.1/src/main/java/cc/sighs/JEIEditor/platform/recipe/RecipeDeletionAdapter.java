@@ -1,4 +1,4 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.platform.recipe;
 
 import cc.sighs.JEIEditor.editor.EditorModel;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -9,11 +9,11 @@ import java.util.Collections;
 import java.util.Optional;
 
 /** Creates a stable identity for deletion without requiring editable slots. */
-final class RecipeDeletionAdapter {
+public final class RecipeDeletionAdapter {
     private RecipeDeletionAdapter() {
     }
 
-    static Optional<EditorModel> createModel(RecipeHolder<?> holder) {
+    public static Optional<EditorModel> createModel(RecipeHolder<?> holder) {
         if (holder == null) {
             return Optional.empty();
         }
@@ -28,7 +28,7 @@ final class RecipeDeletionAdapter {
                 Collections.emptyList()));
     }
 
-    static boolean matches(RecipeHolder<?> holder, String serializerId, String fingerprint) {
+    public static boolean matches(RecipeHolder<?> holder, String serializerId, String fingerprint) {
         return createModel(holder)
                 .map(model -> model.serializerId().equals(serializerId)
                         && model.baseFingerprint().equals(fingerprint))

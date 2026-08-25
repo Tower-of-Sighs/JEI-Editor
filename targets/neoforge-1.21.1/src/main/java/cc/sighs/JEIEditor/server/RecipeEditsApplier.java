@@ -1,10 +1,18 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.server;
 
 import cc.sighs.JEIEditor.editor.EditorIngredient;
 import cc.sighs.JEIEditor.editor.EditorModel;
 import cc.sighs.JEIEditor.editor.EditorSlot;
 import cc.sighs.JEIEditor.editor.RecipePatch;
 import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
+import cc.sighs.JEIEditor.platform.fuel.FuelOverrideState;
+import cc.sighs.JEIEditor.platform.recipe.CookingRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.CraftingSlotMapper;
+import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.RecipeAdapterSupport;
+import cc.sighs.JEIEditor.platform.recipe.RecipeCreationAdapter;
+import cc.sighs.JEIEditor.platform.recipe.RecipeDeletionAdapter;
+import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -41,13 +49,13 @@ import java.util.stream.Stream;
 import com.google.gson.JsonParser;
 
 /** Persists accepted recipe patches and performs targeted recipe synchronization. */
-final class RecipeEditsApplier {
+public final class RecipeEditsApplier {
     private static final String PACK_DESCRIPTION = "JEI Editor recipe overrides";
 
     private RecipeEditsApplier() {
     }
 
-    static boolean canApply(MinecraftServer server, RecipePatch patch) {
+    public static boolean canApply(MinecraftServer server, RecipePatch patch) {
         if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
             return canApplyFuel(server, patch);
         }
@@ -71,7 +79,7 @@ final class RecipeEditsApplier {
                 .flatMap(model -> createRecipeJson(holder, patch, server.registryAccess(), model)).isPresent();
     }
 
-    static CompletableFuture<Void> apply(MinecraftServer server, RecipePatch patch) {
+    public static CompletableFuture<Void> apply(MinecraftServer server, RecipePatch patch) {
         if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
             return applyFuel(server, patch);
         }
@@ -109,7 +117,7 @@ final class RecipeEditsApplier {
     }
 
     /** Saves a patch to the generated datapack without changing live recipes. */
-    static CompletableFuture<Void> save(MinecraftServer server, RecipePatch patch) {
+    public static CompletableFuture<Void> save(MinecraftServer server, RecipePatch patch) {
         if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
             return saveFuel(server, patch);
         }
@@ -140,7 +148,7 @@ final class RecipeEditsApplier {
     }
 
     /** Applies one already-saved patch to the live recipe manager only. */
-    static CompletableFuture<Void> reloadSaved(MinecraftServer server, RecipePatch patch) {
+    public static CompletableFuture<Void> reloadSaved(MinecraftServer server, RecipePatch patch) {
         if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
             Optional<ResourceLocation> itemId = FuelRecipeEditorAdapter.itemId(patch);
             int burnTime = FuelRecipeEditorAdapter.burnTime(patch);
@@ -173,11 +181,11 @@ final class RecipeEditsApplier {
         }
     }
 
-    static CompletableFuture<Void> reset(MinecraftServer server, String recipeIdText) {
+    public static CompletableFuture<Void> reset(MinecraftServer server, String recipeIdText) {
         return reset(server, recipeIdText, null);
     }
 
-    static CompletableFuture<Void> reset(MinecraftServer server, String recipeIdText, EditorModel baseModel) {
+    public static CompletableFuture<Void> reset(MinecraftServer server, String recipeIdText, EditorModel baseModel) {
         if (FuelRecipeEditorAdapter.itemIdFromRecipeId(recipeIdText).isPresent()) {
             return resetFuel(server, recipeIdText, baseModel);
         }
@@ -204,7 +212,7 @@ final class RecipeEditsApplier {
     }
 
     /** Resolves the current model for either a normal recipe or a synthetic fuel entry. */
-    static EditorModel currentModel(MinecraftServer server, RecipePatch patch) {
+    public static EditorModel currentModel(MinecraftServer server, RecipePatch patch) {
         if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
             Optional<ResourceLocation> itemId = FuelRecipeEditorAdapter.itemId(patch);
             if (!itemId.isPresent()) {

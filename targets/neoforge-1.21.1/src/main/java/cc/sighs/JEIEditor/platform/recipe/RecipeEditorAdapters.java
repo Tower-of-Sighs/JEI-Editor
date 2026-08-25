@@ -1,4 +1,4 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.platform.recipe;
 
 import cc.sighs.JEIEditor.editor.EditorModel;
 import cc.sighs.JEIEditor.editor.RecipePatch;
@@ -8,23 +8,23 @@ import net.minecraft.world.item.crafting.RecipeHolder;
 import mezz.jei.api.recipe.vanilla.IJeiFuelingRecipe;
 import java.util.Optional;
 
-final class RecipeEditorAdapters {
+public final class RecipeEditorAdapters {
     private RecipeEditorAdapters() { }
-    static Optional<EditorModel> createModel(RecipeHolder<?> holder, HolderLookup.Provider registries) {
+    public static Optional<EditorModel> createModel(RecipeHolder<?> holder, HolderLookup.Provider registries) {
         Optional<EditorModel> crafting = CraftingRecipeEditorAdapter.createModel(holder, registries);
         return crafting.isPresent() ? crafting : CookingRecipeEditorAdapter.createModel(holder, registries);
     }
-    static Optional<EditorModel> createFuelModel(Object recipe) {
+    public static Optional<EditorModel> createFuelModel(Object recipe) {
         return recipe instanceof IJeiFuelingRecipe
                 ? FuelRecipeEditorAdapter.createModel((IJeiFuelingRecipe) recipe)
                 : Optional.<EditorModel>empty();
     }
-    static RecipePatch replaceInput(EditorModel model, String slotKey, ItemStack stack) {
+    public static RecipePatch replaceInput(EditorModel model, String slotKey, ItemStack stack) {
         return CookingRecipeEditorAdapter.supportsSerializer(model.serializerId())
                 ? CookingRecipeEditorAdapter.replaceInput(model, slotKey, stack)
                 : CraftingRecipeEditorAdapter.replaceInput(model, slotKey, stack);
     }
-    static RecipePatch replaceSlot(EditorModel model, String slotKey, ItemStack stack) {
+    public static RecipePatch replaceSlot(EditorModel model, String slotKey, ItemStack stack) {
         if ("output".equals(slotKey)) {
             return CookingRecipeEditorAdapter.supportsSerializer(model.serializerId())
                     ? CookingRecipeEditorAdapter.replaceOutput(model, stack)
@@ -32,18 +32,18 @@ final class RecipeEditorAdapters {
         }
         return replaceInput(model, slotKey, stack);
     }
-    static RecipePatch clearSlot(EditorModel model, String slotKey) {
+    public static RecipePatch clearSlot(EditorModel model, String slotKey) {
         if (CookingRecipeEditorAdapter.supportsSerializer(model.serializerId())) {
             throw new IllegalArgumentException("cooking input cannot be cleared; replace it with another item");
         }
         return CraftingRecipeEditorAdapter.clearSlot(model, slotKey);
     }
-    static RecipePatch setOutputCount(EditorModel model, int count) {
+    public static RecipePatch setOutputCount(EditorModel model, int count) {
         return CookingRecipeEditorAdapter.supportsSerializer(model.serializerId())
                 ? CookingRecipeEditorAdapter.setOutputCount(model, count)
                 : CraftingRecipeEditorAdapter.setOutputCount(model, count);
     }
-    static RecipePatch setExperience(EditorModel model, float value) { return CookingRecipeEditorAdapter.setExperience(model, value); }
-    static RecipePatch setCookingTime(EditorModel model, int value) { return CookingRecipeEditorAdapter.setCookingTime(model, value); }
-    static RecipePatch setFuelBurnTime(EditorModel model, int value) { return FuelRecipeEditorAdapter.setBurnTime(model, value); }
+    public static RecipePatch setExperience(EditorModel model, float value) { return CookingRecipeEditorAdapter.setExperience(model, value); }
+    public static RecipePatch setCookingTime(EditorModel model, int value) { return CookingRecipeEditorAdapter.setCookingTime(model, value); }
+    public static RecipePatch setFuelBurnTime(EditorModel model, int value) { return FuelRecipeEditorAdapter.setBurnTime(model, value); }
 }

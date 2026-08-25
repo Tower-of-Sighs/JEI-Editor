@@ -1,7 +1,9 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.client;
 
 import cc.sighs.JEIEditor.editor.EditorModel;
 import cc.sighs.JEIEditor.editor.RecipePatch;
+import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
 import mezz.jei.api.gui.IRecipeLayoutDrawable;
 import mezz.jei.api.gui.ingredient.IRecipeSlotsView;
 import mezz.jei.api.recipe.vanilla.IJeiFuelingRecipe;

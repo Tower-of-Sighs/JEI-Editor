@@ -1,9 +1,16 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.platform.network;
 
 import cc.sighs.JEIEditor.editor.RecipePatch;
 import cc.sighs.JEIEditor.editor.RecipeEditBundle;
 import cc.sighs.JEIEditor.editor.RecipeEditPayloadRules;
 import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
+import cc.sighs.JEIEditor.JEIEditorNeoForge121;
+import cc.sighs.JEIEditor.client.ClientEditorState;
+import cc.sighs.JEIEditor.server.RecipeEditCoordinator;
+import cc.sighs.JEIEditor.server.RecipeEditorPolicy;
+import cc.sighs.JEIEditor.server.RecipeEditsApplier;
+import cc.sighs.JEIEditor.server.RecipeEditsSavedData;
+import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
@@ -21,13 +28,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-final class NeoForge121Network {
+public final class NeoForge121Network {
     private static final Logger LOGGER = LoggerFactory.getLogger("JEI Editor Network");
 
     private NeoForge121Network() {
     }
 
-    static void register(RegisterPayloadHandlersEvent event) {
+    public static void register(RegisterPayloadHandlersEvent event) {
         event.registrar("1")
                 .playToServer(RecipeEditPayload.TYPE, RecipeEditPayload.STREAM_CODEC, NeoForge121Network::handleRecipeEdit)
                 .playToServer(RecipeReloadPayload.TYPE, RecipeReloadPayload.STREAM_CODEC, NeoForge121Network::handleRecipeReload)
@@ -35,15 +42,15 @@ final class NeoForge121Network {
                 .playToClient(RecipeEditResultPayload.TYPE, RecipeEditResultPayload.STREAM_CODEC, NeoForge121Network::handleRecipeResult);
     }
 
-    static void send(List<RecipePatch> patches) {
+    public static void send(List<RecipePatch> patches) {
         PacketDistributor.sendToServer(RecipeEditPayload.fromBundle(new RecipeEditBundle(patches)));
     }
 
-    static void sendReload() {
+    public static void sendReload() {
         PacketDistributor.sendToServer(new RecipeReloadPayload());
     }
 
-    static void sendDelete(String recipeId) {
+    public static void sendDelete(String recipeId) {
         PacketDistributor.sendToServer(new RecipeEditDeletePayload(recipeId));
     }
 

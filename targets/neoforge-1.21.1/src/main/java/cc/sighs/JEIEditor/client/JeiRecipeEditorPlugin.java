@@ -1,8 +1,15 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.client;
 
 import cc.sighs.JEIEditor.editor.RecipePatch;
+import cc.sighs.JEIEditor.JEIEditorNeoForge121;
 import cc.sighs.JEIEditor.editor.EditorModel;
 import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
+import cc.sighs.JEIEditor.platform.fuel.FuelOverrideState;
+import cc.sighs.JEIEditor.platform.recipe.CraftingSlotMapper;
+import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.RecipeCreationAdapter;
+import cc.sighs.JEIEditor.platform.recipe.RecipeDeletionAdapter;
+import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
 import mezz.jei.api.IModPlugin;
 import mezz.jei.api.JeiPlugin;
 import mezz.jei.api.gui.handlers.IGhostIngredientHandler;

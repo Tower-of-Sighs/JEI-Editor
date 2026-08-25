@@ -1,4 +1,4 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.server;
 
 import cc.sighs.JEIEditor.editor.RecipePatch;
 import cc.sighs.JEIEditor.editor.EditorIngredient;
@@ -19,7 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /** World-scoped patch and audit storage for the generated recipe overrides. */
-final class RecipeEditsSavedData extends SavedData {
+public final class RecipeEditsSavedData extends SavedData {
     private static final String DATA_ID = "jeieditor_recipe_edits";
     private static final int SCHEMA_VERSION = 2;
     private static final String PATCHES = "patches";
@@ -31,7 +31,7 @@ final class RecipeEditsSavedData extends SavedData {
     private final Map<String, EditorModel> baseModels = new LinkedHashMap<String, EditorModel>();
     private final List<RecipeAuditEntry> audits = new ArrayList<RecipeAuditEntry>();
 
-    static RecipeEditsSavedData get(MinecraftServer server) {
+    public static RecipeEditsSavedData get(MinecraftServer server) {
         return server.overworld().getDataStorage().computeIfAbsent(FACTORY, DATA_ID);
     }
 
@@ -100,14 +100,14 @@ final class RecipeEditsSavedData extends SavedData {
 
     private static RecipePatch readAuditPatch(CompoundTag auditTag, String key) { if (!auditTag.contains(key, Tag.TAG_COMPOUND)) return null; CompoundTag patchTag = auditTag.getCompound(key); ListTag fieldList = patchTag.getList("fields", Tag.TAG_COMPOUND); Map<String, String> fields = new LinkedHashMap<String, String>(); for (int i = 0; i < fieldList.size(); i++) { CompoundTag field = fieldList.getCompound(i); fields.put(field.getString("key"), field.getString("value")); } return new RecipePatch(patchTag.getString("recipe_id"), patchTag.getString("serializer"), patchTag.getString("base_fingerprint"), fields); }
 
-    RecipePatch put(RecipePatch patch, EditorModel baseModel) {
+    public RecipePatch put(RecipePatch patch, EditorModel baseModel) {
         RecipePatch previous = patches.put(patch.recipeId(), patch);
         baseModels.putIfAbsent(patch.recipeId(), baseModel);
         setDirty();
         return previous;
     }
 
-    void restore(String recipeId, RecipePatch previous) {
+    public void restore(String recipeId, RecipePatch previous) {
         if (previous == null) {
             patches.remove(recipeId);
             baseModels.remove(recipeId);
@@ -117,7 +117,7 @@ final class RecipeEditsSavedData extends SavedData {
         setDirty();
     }
 
-    RecipePatch remove(String recipeId) {
+    public RecipePatch remove(String recipeId) {
         RecipePatch previous = patches.remove(recipeId);
         baseModels.remove(recipeId);
         if (previous != null) {
@@ -126,7 +126,7 @@ final class RecipeEditsSavedData extends SavedData {
         return previous;
     }
 
-    void restore(String recipeId, RecipePatch previous, EditorModel baseModel) {
+    public void restore(String recipeId, RecipePatch previous, EditorModel baseModel) {
         if (previous != null && baseModel != null) {
             patches.put(recipeId, previous);
             baseModels.put(recipeId, baseModel);
@@ -134,15 +134,15 @@ final class RecipeEditsSavedData extends SavedData {
         }
     }
 
-    Map<String, RecipePatch> patches() {
+    public Map<String, RecipePatch> patches() {
         return Collections.unmodifiableMap(patches);
     }
 
-    EditorModel baseModel(String recipeId) {
+    public EditorModel baseModel(String recipeId) {
         return baseModels.get(recipeId);
     }
 
-    void audit(String actor, String operation, RecipePatch previous, RecipePatch next) {
+    public void audit(String actor, String operation, RecipePatch previous, RecipePatch next) {
         if (previous == null && next == null) {
             return;
         }
@@ -151,7 +151,7 @@ final class RecipeEditsSavedData extends SavedData {
         while (audits.size() > 128) audits.remove(0);
         setDirty();
     }
-    List<RecipeAuditEntry> auditEntries() { return Collections.unmodifiableList(audits); }
+    public List<RecipeAuditEntry> auditEntries() { return Collections.unmodifiableList(audits); }
 
     @Override
     public CompoundTag save(CompoundTag tag, HolderLookup.Provider registries) {

@@ -1,4 +1,4 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.server;
 
 import com.google.gson.JsonObject;
 import net.minecraft.core.HolderLookup;

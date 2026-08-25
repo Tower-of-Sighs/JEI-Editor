@@ -1,4 +1,4 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.platform.recipe;
 
 import cc.sighs.JEIEditor.editor.EditorIngredient;
 import cc.sighs.JEIEditor.editor.EditorModel;
@@ -19,10 +19,10 @@ import java.util.Map;
 import java.util.Optional;
 
 /** Adapter for standard vanilla cooking recipes. */
-final class CookingRecipeEditorAdapter {
+public final class CookingRecipeEditorAdapter {
     private CookingRecipeEditorAdapter() { }
 
-    static Optional<EditorModel> createModel(RecipeHolder<?> holder, HolderLookup.Provider registries) {
+    public static Optional<EditorModel> createModel(RecipeHolder<?> holder, HolderLookup.Provider registries) {
         if (!(holder.value() instanceof AbstractCookingRecipe)) return Optional.empty();
         AbstractCookingRecipe recipe = (AbstractCookingRecipe) holder.value();
         ResourceLocation serializer = BuiltInRegistries.RECIPE_SERIALIZER.getKey(recipe.getSerializer());
@@ -47,7 +47,7 @@ final class CookingRecipeEditorAdapter {
                 slots, properties));
     }
 
-    static RecipePatch replaceInput(EditorModel model, String slotKey, ItemStack stack) {
+    public static RecipePatch replaceInput(EditorModel model, String slotKey, ItemStack stack) {
         Optional<EditorIngredient> ingredient = RecipeAdapterSupport.simpleStack(stack);
         if (!ingredient.isPresent() || !"input.0".equals(slotKey)) {
             throw new IllegalArgumentException("only simple cooking input can be replaced");
@@ -55,7 +55,7 @@ final class CookingRecipeEditorAdapter {
         return RecipeAdapterSupport.slotPatch(model, "input.0", ingredient.get());
     }
 
-    static RecipePatch replaceOutput(EditorModel model, ItemStack stack) {
+    public static RecipePatch replaceOutput(EditorModel model, ItemStack stack) {
         Optional<EditorIngredient> ingredient = RecipeAdapterSupport.simpleStack(stack);
         if (!ingredient.isPresent()) {
             throw new IllegalArgumentException("only simple output items can be used");
@@ -63,23 +63,23 @@ final class CookingRecipeEditorAdapter {
         return RecipeAdapterSupport.slotPatch(model, "output", ingredient.get());
     }
 
-    static RecipePatch setOutputCount(EditorModel model, int count) {
+    public static RecipePatch setOutputCount(EditorModel model, int count) {
         if (count < 1 || count > 64) throw new IllegalArgumentException("output count must be between 1 and 64");
         LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
         fields.put("output.count", Integer.toString(count));
         return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
     }
-    static RecipePatch setExperience(EditorModel model, float value) {
+    public static RecipePatch setExperience(EditorModel model, float value) {
         if (value < 0.0F || value > 1000.0F || Float.isNaN(value) || Float.isInfinite(value)) throw new IllegalArgumentException("experience must be between 0 and 1000");
         LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>(); fields.put("recipe.experience", Float.toString(value));
         return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
     }
-    static RecipePatch setCookingTime(EditorModel model, int value) {
+    public static RecipePatch setCookingTime(EditorModel model, int value) {
         if (value < 1 || value > 1000000) throw new IllegalArgumentException("cooking time must be between 1 and 1000000");
         LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>(); fields.put("recipe.cooking_time", Integer.toString(value));
         return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
     }
-    static boolean supportsSerializer(String serializerId) {
+    public static boolean supportsSerializer(String serializerId) {
         return "minecraft:smelting".equals(serializerId) || "minecraft:blasting".equals(serializerId)
                 || "minecraft:smoking".equals(serializerId) || "minecraft:campfire_cooking".equals(serializerId);
     }

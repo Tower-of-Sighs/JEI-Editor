@@ -1,4 +1,4 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.client;
 
 import cc.sighs.JEIEditor.editor.RecipePatch;
 import cc.sighs.JEIEditor.editor.RecipeEditSession;
@@ -6,6 +6,12 @@ import cc.sighs.JEIEditor.editor.EditorModel;
 import cc.sighs.JEIEditor.editor.EditorIngredient;
 import cc.sighs.JEIEditor.editor.EditorSlot;
 import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
+import cc.sighs.JEIEditor.platform.fuel.FuelOverrideState;
+import cc.sighs.JEIEditor.platform.recipe.CookingRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.CraftingSlotMapper;
+import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.RecipeCreationAdapter;
+import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
 import mezz.jei.api.gui.ingredient.IRecipeSlotDrawable;
 import mezz.jei.api.gui.ingredient.IRecipeSlotView;
 import mezz.jei.api.gui.ingredient.IRecipeSlotsView;
@@ -29,7 +35,7 @@ import java.util.Locale;
 import java.util.regex.Pattern;
 
 /** Client-only state for the first editor interaction slice. */
-final class ClientEditorState {
+public final class ClientEditorState {
     private static final Pattern RECIPE_PATH = Pattern.compile("[a-z0-9._/-]+");
     private static final String RECIPE_NAMESPACE = "jeieditor";
     private static String lastDrop = "";
@@ -481,7 +487,7 @@ final class ClientEditorState {
         try { return value == null ? fallback : Integer.parseInt(value); } catch (NumberFormatException ignored) { return fallback; }
     }
 
-    static void applyResult(boolean success, String message, String recipeId) {
+    public static void applyResult(boolean success, String message, String recipeId) {
         lastDrop = message + (recipeId.isEmpty() ? "" : ": " + recipeId);
         if (!success) {
             submittedSavePatches.clear();

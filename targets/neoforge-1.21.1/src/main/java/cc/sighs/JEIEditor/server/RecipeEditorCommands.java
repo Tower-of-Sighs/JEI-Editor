@@ -1,8 +1,10 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.server;
 
 import cc.sighs.JEIEditor.editor.RecipeEditBundle;
 import cc.sighs.JEIEditor.editor.RecipeEditBundleCodec;
 import cc.sighs.JEIEditor.editor.RecipePatch;
+import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
@@ -20,10 +22,10 @@ import java.nio.file.Path;
 import java.util.List;
 
 /** Optional command helpers. Generated datapack files are the source of truth. */
-final class RecipeEditorCommands {
+public final class RecipeEditorCommands {
     private static final long MAX_FILE_BYTES = 1024L * 1024L;
     private RecipeEditorCommands() { }
-    static void register() { NeoForge.EVENT_BUS.addListener(RecipeEditorCommands::registerCommands); }
+    public static void register() { NeoForge.EVENT_BUS.addListener(RecipeEditorCommands::registerCommands); }
     private static void registerCommands(RegisterCommandsEvent event) {
         event.getDispatcher().register(Commands.literal("jeieditor")
                 .then(Commands.literal("export").then(Commands.argument("name", StringArgumentType.word()).executes(context -> exportFile(context.getSource(), StringArgumentType.getString(context, "name")))))

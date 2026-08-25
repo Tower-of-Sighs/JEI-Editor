@@ -1,6 +1,7 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.platform.recipe;
 
 import cc.sighs.JEIEditor.editor.EditorModel;
+import cc.sighs.JEIEditor.client.JeiRecipeIntrospection;
 import mezz.jei.api.gui.ingredient.IRecipeSlotDrawable;
 import mezz.jei.api.gui.ingredient.IRecipeSlotView;
 import mezz.jei.api.recipe.RecipeIngredientRole;
@@ -14,11 +15,11 @@ import java.util.ArrayList;
 import java.util.Comparator;
 
 /** Maps JEI's fixed 3x3 crafting grid positions to editor input keys. */
-final class CraftingSlotMapper {
+public final class CraftingSlotMapper {
     private CraftingSlotMapper() {
     }
 
-    static String slotKey(EditorModel model, Object displayedRecipe,
+    public static String slotKey(EditorModel model, Object displayedRecipe,
                           List<IRecipeSlotView> slots, IRecipeSlotView target) {
         if (target == null) {
             return null;
@@ -130,7 +131,7 @@ final class CraftingSlotMapper {
      * editor must use the recipe's real grid geometry so the third row stays
      * editable and the saved pattern keeps its intended shape.
      */
-    static int craftingGridIndex(int index, int width, int height) {
+    public static int craftingGridIndex(int index, int width, int height) {
         // This mirrors JEI's CraftingGridHelper semantic placement. It is
         // deliberately expressed in grid coordinates, never screen pixels.
         if (width == 1) {

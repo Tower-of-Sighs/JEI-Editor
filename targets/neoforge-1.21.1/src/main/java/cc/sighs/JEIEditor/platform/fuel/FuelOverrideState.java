@@ -1,6 +1,8 @@
-package cc.sighs.JEIEditor;
+package cc.sighs.JEIEditor.platform.fuel;
 
 import cc.sighs.JEIEditor.editor.RecipePatch;
+import cc.sighs.JEIEditor.JEIEditorNeoForge121;
+import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
@@ -15,34 +17,34 @@ import java.util.Optional;
 
 /** In-memory fuel values used immediately after a save, before the next data reload. */
 @EventBusSubscriber(modid = JEIEditorNeoForge121.MOD_ID)
-final class FuelOverrideState {
+public final class FuelOverrideState {
     private static final Map<ResourceLocation, Integer> OVERRIDES =
             new LinkedHashMap<ResourceLocation, Integer>();
 
     private FuelOverrideState() {
     }
 
-    static synchronized void set(ResourceLocation itemId, int burnTime) {
+    public static synchronized void set(ResourceLocation itemId, int burnTime) {
         if (itemId != null && burnTime >= 0) {
             OVERRIDES.put(itemId, Integer.valueOf(burnTime));
         }
     }
 
-    static synchronized void remove(ResourceLocation itemId) {
+    public static synchronized void remove(ResourceLocation itemId) {
         if (itemId != null) {
             OVERRIDES.remove(itemId);
         }
     }
 
-    static synchronized Optional<Integer> get(ResourceLocation itemId) {
+    public static synchronized Optional<Integer> get(ResourceLocation itemId) {
         return Optional.ofNullable(OVERRIDES.get(itemId));
     }
 
-    static synchronized Map<ResourceLocation, Integer> snapshot() {
+    public static synchronized Map<ResourceLocation, Integer> snapshot() {
         return Collections.unmodifiableMap(new LinkedHashMap<ResourceLocation, Integer>(OVERRIDES));
     }
 
-    static void applyPatch(RecipePatch patch) {
+    public static void applyPatch(RecipePatch patch) {
         FuelRecipeEditorAdapter.itemId(patch).ifPresent(itemId -> set(itemId,
                 FuelRecipeEditorAdapter.burnTime(patch)));
     }
