@@ -10,6 +10,7 @@ import cc.sighs.JEIEditor.platform.fuel.FuelOverrideState;
 import cc.sighs.JEIEditor.platform.recipe.CookingRecipeEditorAdapter;
 import cc.sighs.JEIEditor.platform.recipe.CraftingSlotMapper;
 import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeCreationAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
 import mezz.jei.api.gui.ingredient.IRecipeSlotDrawable;
@@ -176,13 +177,21 @@ public final class ClientEditorState {
 
     static boolean hasCreationDraft(Screen screen) {
         Map<String, EditorModel> drafts = creationDrafts.get(screen);
-        return drafts != null && !drafts.isEmpty();
+        if (drafts == null || drafts.isEmpty()) {
+            return false;
+        }
+        for (String recipeId : drafts.keySet()) {
+            if (isCreationStaged(recipeId)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     static boolean cancelCreationDraft(Screen screen, String recipeId) {
         Map<String, EditorModel> drafts = creationDrafts.get(screen);
         if (drafts == null || recipeId == null || !drafts.containsKey(recipeId)
-                || !isCreationStaged(recipeId)) {
+                || (!isCreationStaged(recipeId) && !isRecipeDeleted(recipeId))) {
             return false;
         }
         session.remove(java.util.Collections.singleton(recipeId));
@@ -349,6 +358,18 @@ public final class ClientEditorState {
                 continue;
             }
             previewSlots.add(drawable);
+            if (JeiVanillaRecipeEditorAdapter.supportsSerializer(model.serializerId())) {
+                net.minecraft.client.Minecraft minecraft = net.minecraft.client.Minecraft.getInstance();
+                Optional<ItemStack> stack = JeiVanillaRecipeEditorAdapter.patchedStack(
+                        model, slotKey, patch,
+                        minecraft.level == null ? null : minecraft.level.registryAccess());
+                if (stack.isPresent()) {
+                    drawable.createDisplayOverrides().addItemStack(stack.get());
+                } else {
+                    drawable.createDisplayOverrides();
+                }
+                continue;
+            }
             EditorIngredient ingredient = patchedIngredient(model, slotKey, patch);
             if (ingredient != null) {
                 ResourceLocation id = ResourceLocation.tryParse(ingredient.itemId());
@@ -513,6 +534,9 @@ public final class ClientEditorState {
             }
             java.util.List<RecipePatch> submitted =
                     new java.util.ArrayList<RecipePatch>(allKnown.values());
+            if (message.startsWith("Reloaded ")) {
+                JeiRecipeEditorPlugin.applyCreatedAnvilPatches(submitted);
+            }
             for (RecipePatch patch : submitted) {
                 if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
                     FuelOverrideState.applyPatch(patch);
@@ -547,6 +571,25 @@ public final class ClientEditorState {
                 && left.serializerId().equals(right.serializerId())
                 && left.baseFingerprint().equals(right.baseFingerprint())
                 && left.fields().equals(right.fields());
+    }
+
+    /** Applies the server's persisted synthetic entries after joining a world.
+     * Save results already carry this information through the normal result
+     * packet; this path covers reconnects where no edit was made this session. */
+    public static void applySavedPatches(List<RecipePatch> patches) {
+        // The server sends a complete snapshot. An empty snapshot must clear
+        // synthetic pages that were removed from the generated datapack.
+        JeiRecipeEditorPlugin.replaceCreatedAnvilPatches(patches);
+        FuelOverrideState.clear();
+        if (patches == null || patches.isEmpty()) {
+            return;
+        }
+        for (RecipePatch patch : patches) {
+            if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
+                FuelOverrideState.applyPatch(patch);
+            }
+        }
+        JeiRecipeEditorPlugin.applyFuelResult(patches);
     }
 
     static boolean isRecipeScreen(Screen screen) {

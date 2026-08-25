@@ -7,6 +7,7 @@ import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
 import cc.sighs.JEIEditor.platform.fuel.FuelOverrideState;
 import cc.sighs.JEIEditor.platform.recipe.CraftingSlotMapper;
 import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeCreationAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeDeletionAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
@@ -23,6 +24,8 @@ import mezz.jei.api.recipe.vanilla.IJeiFuelingRecipe;
 import mezz.jei.gui.recipes.RecipesGui;
 import mezz.jei.common.Internal;
 import mezz.jei.library.plugins.vanilla.cooking.fuel.FuelingRecipe;
+import mezz.jei.library.plugins.vanilla.anvil.AnvilRecipe;
+import mezz.jei.api.recipe.vanilla.IJeiAnvilRecipe;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.Rect2i;
@@ -42,6 +45,9 @@ import java.util.Map;
 @JeiPlugin
 public final class JeiRecipeEditorPlugin implements IModPlugin {
     private static final Map<String, Integer> fuelPreviewTimes = new HashMap<String, Integer>();
+    private static final Map<String, RecipePatch> createdAnvilPatches =
+            new HashMap<String, RecipePatch>();
+    private static boolean createdAnvilRestoreScheduled;
     @Override
     public ResourceLocation getPluginUid() {
         return ResourceLocation.fromNamespaceAndPath(JEIEditorNeoForge121.MOD_ID, "jei_plugin");
@@ -226,13 +232,17 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         cc.sighs.JEIEditor.editor.EditorIngredient ingredient = original.ingredient();
         String item = patch.fields().get(slotKey + ".item");
         String count = patch.fields().get(slotKey + ".count");
+        String stack = patch.fields().get(slotKey + ".stack");
         boolean itemChanged = item != null && (ingredient == null
                 ? !"minecraft:air".equals(item)
                 : !item.equals(ingredient.itemId()));
         boolean countChanged = count != null && (ingredient == null
                 ? !"0".equals(count)
                 : !count.equals(Integer.toString(ingredient.count())));
-        return itemChanged || countChanged;
+        boolean stackChanged = stack != null && !stack.equals(model.properties().get(
+                cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter
+                        .STACK_PROPERTY_PREFIX + slotKey));
+        return itemChanged || countChanged || stackChanged;
     }
 
     private static boolean matchesRecipe(Object displayedRecipe, IRecipeCategory<?> category, String recipeId) {
@@ -241,13 +251,23 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             return model.isPresent() && model.get().recipeId().equals(recipeId);
         }
         Optional<ResourceLocation> categoryId = JeiRecipeIntrospection.recipeId(category, displayedRecipe);
+        // Some JEI generated pages (notably anvil enchantment pages) have no
+        // registry UID. Use the same adapter-derived synthetic identity that
+        // resolveModel() uses so pending previews still attach to the page.
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level != null) {
+            Optional<EditorModel> jeiModel = RecipeEditorAdapters.createJeiModel(
+                    displayedRecipe, categoryId.orElse(null), minecraft.level.registryAccess());
+            if (jeiModel.isPresent()) {
+                return jeiModel.get().recipeId().equals(recipeId);
+            }
+        }
         if (categoryId.isPresent()) {
             return categoryId.get().toString().equals(recipeId);
         }
         if (displayedRecipe instanceof RecipeHolder<?>) {
             return ((RecipeHolder<?>) displayedRecipe).id().toString().equals(recipeId);
         }
-        Minecraft minecraft = Minecraft.getInstance();
         return minecraft.level != null && minecraft.level.getRecipeManager().getRecipes().stream()
                 .anyMatch(holder -> holder.id().toString().equals(recipeId)
                         && (holder.value() == displayedRecipe || holder.value().equals(displayedRecipe)));
@@ -281,6 +301,9 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             }
             EditorModel editableModel = ClientEditorState.creationModelFor(gui, model.get().recipeId())
                     .orElse(model.get());
+            if (isExistingAnvil(editableModel)) {
+                continue;
+            }
             IRecipeSlotsView slots = layout.getRecipeLayout().getRecipeSlotsView();
             String slotKey = RecipeGhostHandler.slotKey(slots.getSlotViews(), slot.get().slot(), displayedRecipe,
                     editableModel);
@@ -332,7 +355,9 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             ClientEditorState.rememberTarget(target.get().model, target.get().slotKey,
                     target.get().slots, target.get().recipe);
             ClientEditorState.setPendingPatch(RecipeEditorAdapters.replaceSlot(
-                    target.get().model, target.get().slotKey, stack));
+                    target.get().model, target.get().slotKey, stack,
+                    Minecraft.getInstance().level == null ? null
+                            : Minecraft.getInstance().level.registryAccess()));
             ClientEditorState.setLastDrop("Moved " + stack.getHoverName().getString()
                     + " to " + target.get().slotKey);
             return true;
@@ -349,6 +374,18 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
                 continue;
             }
             Object displayedRecipe = layout.getRecipeLayout().getRecipe();
+            Optional<EditorModel> source = resolveModel(displayedRecipe,
+                    layout.getRecipeLayout().getRecipeCategory());
+            if (source.isPresent() && "jei:anvil".equals(source.get().serializerId())) {
+                Optional<EditorModel> creation = ClientEditorState.creationModelFor(
+                        gui, source.get().recipeId());
+                if (creation.isPresent()) {
+                    return creation;
+                }
+                // Existing JEI anvil pages are intentionally read-only. They
+                // may still expose the page context menu for New Recipe.
+                continue;
+            }
             Optional<RecipeHolder<?>> holder = resolveRecipeHolder(displayedRecipe,
                     layout.getRecipeLayout().getRecipeCategory());
             Optional<EditorModel> model = holder.flatMap(RecipeDeletionAdapter::createModel);
@@ -412,6 +449,12 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         if (fuelModel.isPresent()) {
             return fuelModel;
         }
+        Optional<EditorModel> jeiModel = RecipeEditorAdapters.createJeiModel(displayedRecipe,
+                JeiRecipeIntrospection.recipeId(category, displayedRecipe).orElse(null),
+                minecraft.level.registryAccess());
+        if (jeiModel.isPresent()) {
+            return jeiModel;
+        }
         if (category != null && !JeiRecipeIntrospection.isHandled(category, displayedRecipe)) {
             return Optional.empty();
         }
@@ -464,6 +507,9 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             }
             EditorModel editableModel = ClientEditorState.creationModelFor(gui, source.recipeId())
                     .orElse(source);
+            if (isExistingAnvil(editableModel)) {
+                continue;
+            }
             // Fuel entries are generated from the item registry rather than
             // recipe JSON. Their editable operation is burn-time scrolling;
             // dragging a different item would require changing the synthetic
@@ -493,6 +539,11 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             }
         }
         return targets;
+    }
+
+    private static boolean isExistingAnvil(EditorModel model) {
+        return model != null && "jei:anvil".equals(model.serializerId())
+                && !RecipeCreationAdapter.isCreatedModel(model);
     }
 
     /** Returns every layout currently shown by JEI through the compatibility boundary. */
@@ -531,9 +582,15 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
     static Set<String> currentPageRecipeIds(RecipesGui gui) {
         Set<String> result = new HashSet<String>();
         for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
-            Optional<RecipeHolder<?>> holder = resolveRecipeHolder(layout.getRecipeLayout().getRecipe(),
-                    layout.getRecipeLayout().getRecipeCategory());
-            holder.ifPresent(value -> result.add(value.id().toString()));
+            Object recipe = layout.getRecipeLayout().getRecipe();
+            IRecipeCategory<?> category = layout.getRecipeLayout().getRecipeCategory();
+            Optional<ResourceLocation> id = JeiRecipeIntrospection.recipeId(category, recipe);
+            if (id.isPresent()) {
+                result.add(id.get().toString());
+            } else {
+                Optional<RecipeHolder<?>> holder = resolveRecipeHolder(recipe, category);
+                holder.ifPresent(value -> result.add(value.id().toString()));
+            }
         }
         return result;
     }
@@ -604,6 +661,147 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         } else {
             hideFuelRecipes(runtime.get(), itemId);
         }
+    }
+
+    /** Re-registers persisted synthetic anvil pages after a server reload. */
+    static void applyCreatedAnvilPatches(List<RecipePatch> patches) {
+        if (patches == null) {
+            return;
+        }
+        Set<ResourceLocation> removed = new HashSet<ResourceLocation>();
+        for (RecipePatch patch : patches) {
+            if (patch == null || !"jei:anvil".equals(patch.serializerId())) {
+                continue;
+            }
+            if (RecipePatchSemantics.isDeletion(patch)) {
+                createdAnvilPatches.remove(patch.recipeId());
+                ResourceLocation uid = ResourceLocation.tryParse(patch.recipeId());
+                if (uid != null) {
+                    removed.add(uid);
+                }
+            } else if (RecipePatchSemantics.isCreation(patch)) {
+                createdAnvilPatches.put(patch.recipeId(), patch);
+            }
+        }
+        hideCreatedAnvilRecipes(removed);
+        scheduleCreatedAnvilRestore();
+    }
+
+    /** Replaces the client snapshot received from the server after login or reload. */
+    static void replaceCreatedAnvilPatches(List<RecipePatch> patches) {
+        Set<ResourceLocation> removed = new HashSet<ResourceLocation>();
+        for (String recipeId : new HashSet<String>(createdAnvilPatches.keySet())) {
+            ResourceLocation uid = ResourceLocation.tryParse(recipeId);
+            if (uid != null) {
+                removed.add(uid);
+            }
+        }
+        createdAnvilPatches.clear();
+        if (patches != null) {
+            for (RecipePatch patch : patches) {
+                if (patch != null && JeiVanillaRecipeEditorAdapter.isCreatedAnvilPatch(patch)) {
+                    createdAnvilPatches.put(patch.recipeId(), patch);
+                    ResourceLocation uid = ResourceLocation.tryParse(patch.recipeId());
+                    if (uid != null) {
+                        removed.remove(uid);
+                    }
+                }
+            }
+        }
+        hideCreatedAnvilRecipes(removed);
+        scheduleCreatedAnvilRestore();
+    }
+
+    static RecipePatch createdAnvilPatch(String recipeId) {
+        return recipeId == null ? null : createdAnvilPatches.get(recipeId);
+    }
+
+    /**
+     * JEI rebuilds its recipe maps from a RecipesUpdatedEvent after the
+     * vanilla client recipe manager changes. Queue synthetic entries until
+     * that rebuild has completed; registering them from inside the event can
+     * otherwise be overwritten by JEI a moment later.
+     */
+    static void scheduleCreatedAnvilRestore() {
+        if (createdAnvilRestoreScheduled) {
+            return;
+        }
+        createdAnvilRestoreScheduled = true;
+        Minecraft.getInstance().execute(() -> {
+            createdAnvilRestoreScheduled = false;
+            restoreCreatedAnvilRecipes();
+        });
+    }
+
+    /** Reapplies the client-side JEI entries after JEI rebuilds its recipe list. */
+    static void restoreCreatedAnvilRecipes() {
+        if (createdAnvilPatches.isEmpty() || Minecraft.getInstance().level == null) {
+            return;
+        }
+        Optional<mezz.jei.api.runtime.IJeiRuntime> runtime = Internal.getOptionalJeiRuntime();
+        if (!runtime.isPresent()) {
+            return;
+        }
+        List<IJeiAnvilRecipe> recipes = new ArrayList<IJeiAnvilRecipe>();
+        for (RecipePatch patch : createdAnvilPatches.values()) {
+            Optional<IJeiAnvilRecipe> recipe = createdAnvilRecipe(patch);
+            recipe.ifPresent(recipes::add);
+        }
+        if (recipes.isEmpty()) {
+            return;
+        }
+        List<IJeiAnvilRecipe> existing = runtime.get().getRecipeManager()
+                .createRecipeLookup(RecipeTypes.ANVIL).includeHidden().get()
+                .filter(recipe -> recipes.stream().anyMatch(value ->
+                        value.getUid().equals(recipe.getUid())))
+                .collect(java.util.stream.Collectors.toList());
+        if (!existing.isEmpty()) {
+            runtime.get().getRecipeManager().hideRecipes(RecipeTypes.ANVIL, existing);
+        }
+        runtime.get().getRecipeManager().addRecipes(RecipeTypes.ANVIL, recipes);
+        if (Minecraft.getInstance().screen instanceof RecipesGui) {
+            JeiRecipeIntrospection.refreshRecipeLookup((RecipesGui) Minecraft.getInstance().screen);
+        }
+    }
+
+    private static void hideCreatedAnvilRecipes(Set<ResourceLocation> uids) {
+        if (uids == null || uids.isEmpty()) {
+            return;
+        }
+        Optional<mezz.jei.api.runtime.IJeiRuntime> runtime = Internal.getOptionalJeiRuntime();
+        if (!runtime.isPresent()) {
+            return;
+        }
+        List<IJeiAnvilRecipe> existing = runtime.get().getRecipeManager()
+                .createRecipeLookup(RecipeTypes.ANVIL).includeHidden().get()
+                .filter(recipe -> uids.contains(recipe.getUid()))
+                .collect(java.util.stream.Collectors.toList());
+        if (!existing.isEmpty()) {
+            runtime.get().getRecipeManager().hideRecipes(RecipeTypes.ANVIL, existing);
+        }
+    }
+
+    private static Optional<IJeiAnvilRecipe> createdAnvilRecipe(RecipePatch patch) {
+        if (patch == null || Minecraft.getInstance().level == null) {
+            return Optional.empty();
+        }
+        ResourceLocation uid = ResourceLocation.tryParse(patch.recipeId());
+        if (uid == null) {
+            return Optional.empty();
+        }
+        Optional<ItemStack> left = cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter
+                .stackFromFields(patch, "input.0", Minecraft.getInstance().level.registryAccess());
+        Optional<ItemStack> right = cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter
+                .stackFromFields(patch, "input.1", Minecraft.getInstance().level.registryAccess());
+        Optional<ItemStack> output = cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter
+                .stackFromFields(patch, "output", Minecraft.getInstance().level.registryAccess());
+        if (!left.isPresent() || !right.isPresent() || !output.isPresent()) {
+            return Optional.empty();
+        }
+        return Optional.of(new AnvilRecipe(
+                Collections.singletonList(left.get().copy()),
+                Collections.singletonList(right.get().copy()),
+                Collections.singletonList(output.get().copy()), uid));
     }
 
     private static void hideFuelRecipes(mezz.jei.api.runtime.IJeiRuntime runtime, ResourceLocation itemId) {
@@ -694,7 +892,9 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             try {
                 ClientEditorState.rememberTarget(target.model, target.slotKey, target.slots, target.recipe);
                 ClientEditorState.setPendingPatch(RecipeEditorAdapters.replaceSlot(
-                        target.model, target.slotKey, stack));
+                        target.model, target.slotKey, stack,
+                        Minecraft.getInstance().level == null ? null
+                                : Minecraft.getInstance().level.registryAccess()));
                 ClientEditorState.setLastDrop("Placed " + stack.getHoverName().getString() + " in " + target.slotKey);
             } catch (IllegalArgumentException exception) {
                 ClientEditorState.setLastDrop(exception.getMessage());

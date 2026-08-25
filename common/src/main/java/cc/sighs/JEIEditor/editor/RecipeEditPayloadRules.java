@@ -5,7 +5,8 @@ public final class RecipeEditPayloadRules {
     public static final int MAX_FIELDS = 128;
     public static final int MAX_PATCHES = RecipeEditBundle.MAX_PATCHES;
     public static final int MAX_FIELD_KEY_LENGTH = 64;
-    public static final int MAX_FIELD_VALUE_LENGTH = 512;
+    /** Large enough for a component-bearing ItemStack while keeping payloads bounded. */
+    public static final int MAX_FIELD_VALUE_LENGTH = 8192;
 
     private RecipeEditPayloadRules() {
     }

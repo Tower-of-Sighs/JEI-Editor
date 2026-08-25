@@ -47,6 +47,33 @@ class RecipeRulesTest {
     }
 
     @Test
+    void creationRulesUseTheVanillaSlotShapeForStonecuttingAndSmithing() {
+        EditorModel stone = new EditorModel("minecraft:source", "minecraft:stonecutting", "fingerprint",
+                Collections.singletonList(new EditorSlot("input.0", "input", null)));
+        EditorModel smithing = new EditorModel("minecraft:source", "minecraft:smithing_trim", "fingerprint",
+                Collections.singletonList(new EditorSlot("input.0", "input", null)));
+
+        assertEquals(2, RecipeCreationRules.createModel(withOutput(stone)).get().slots().size());
+        assertEquals(4, RecipeCreationRules.createModel(withOutput(smithing)).get().slots().size());
+    }
+
+    @Test
+    void creationRulesUseTwoInputsForJeiAnvilDrafts() {
+        EditorModel anvil = new EditorModel("jei:source", "jei:anvil", "fingerprint",
+                Arrays.asList(new EditorSlot("input.0", "input", null),
+                        new EditorSlot("input.1", "input", null),
+                        new EditorSlot("output", "output", null)));
+
+        EditorModel draft = RecipeCreationRules.createModel(anvil).orElse(null);
+
+        assertNotNull(draft);
+        assertEquals(3, draft.slots().size());
+        assertEquals("input.0", draft.slots().get(0).key());
+        assertEquals("input.1", draft.slots().get(1).key());
+        assertEquals("output", draft.slots().get(2).key());
+    }
+
+    @Test
     void policyRulesNormalizeNamespacesAndClampPermission() {
         Properties properties = new Properties();
         properties.setProperty("min_permission_level", "99");
@@ -78,5 +105,11 @@ class RecipeRulesTest {
         LinkedHashMap<String, String> copy = new LinkedHashMap<String, String>(source);
         copy.put("recipe.new", "true");
         return copy;
+    }
+
+    private static EditorModel withOutput(EditorModel model) {
+        java.util.List<EditorSlot> slots = new java.util.ArrayList<EditorSlot>(model.slots());
+        slots.add(new EditorSlot("output", "output", null));
+        return new EditorModel(model.recipeId(), model.serializerId(), model.baseFingerprint(), slots);
     }
 }

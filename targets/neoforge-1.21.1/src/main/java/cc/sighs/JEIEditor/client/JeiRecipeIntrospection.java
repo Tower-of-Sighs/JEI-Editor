@@ -5,6 +5,7 @@ import mezz.jei.api.gui.ingredient.IRecipeSlotDrawable;
 import mezz.jei.api.gui.inputs.RecipeSlotUnderMouse;
 import mezz.jei.api.gui.widgets.ITextWidget;
 import mezz.jei.api.gui.widgets.IRecipeWidget;
+import mezz.jei.api.gui.placement.HorizontalAlignment;
 import mezz.jei.api.ingredients.ITypedIngredient;
 import mezz.jei.api.constants.RecipeTypes;
 import mezz.jei.api.recipe.category.IRecipeCategory;
@@ -18,10 +19,16 @@ import mezz.jei.gui.recipes.IRecipeGuiLogic;
 import mezz.jei.gui.recipes.IRecipeLayoutWithButtons;
 import mezz.jei.gui.recipes.RecipeGuiLayouts;
 import mezz.jei.gui.recipes.RecipesGui;
+import mezz.jei.gui.elements.IconButton;
+import mezz.jei.gui.input.GuiTextFieldFilter;
+import mezz.jei.gui.overlay.IngredientListOverlay;
+import mezz.jei.gui.overlay.bookmarks.BookmarkOverlay;
+import mezz.jei.gui.overlay.ingredients.IIngredientGridView;
 import mezz.jei.library.plugins.vanilla.crafting.CraftingRecipeCategory;
 import net.minecraft.client.renderer.Rect2i;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.navigation.ScreenPosition;
+import net.minecraft.network.chat.FormattedText;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.CraftingRecipe;
@@ -54,9 +61,15 @@ public final class JeiRecipeIntrospection {
     private static Field recipeLayoutWidgetsField;
     private static Field recipesGuiPreviousPageField;
     private static Field recipesGuiNextPageField;
+    private static Field ingredientOverlayContentsField;
+    private static Field ingredientOverlaySearchField;
+    private static Field ingredientOverlayConfigButtonField;
+    private static Method ingredientContentsMouseOverMethod;
     private static Method iconButtonAreaMethod;
     private static Method recipeLayoutsAreaMethod;
     private static Method ensureRecipeExtrasMethod;
+    private static Field textWidgetTextField;
+    private static Field textWidgetHorizontalAlignmentField;
     private static final Map<ITextWidget, ScreenPosition> hiddenRecipeTextPositions =
             new WeakHashMap<ITextWidget, ScreenPosition>();
     private static final Map<IRecipeLayoutDrawable<?>, Map<IRecipeSlotDrawable, ScreenPosition>> slotOffsets =
@@ -255,13 +268,209 @@ public final class JeiRecipeIntrospection {
             }
             for (Object widget : (List<?>) widgets) {
                 if (widget instanceof ITextWidget && widget instanceof IRecipeWidget) {
-                    return Optional.of(((IRecipeWidget) widget).getPosition());
+                    return Optional.of(originalRecipeWidgetPosition((ITextWidget) widget));
                 }
             }
         } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
             // Keep the editor usable if JEI changes its private widget list.
         }
         return Optional.empty();
+    }
+
+    /**
+     * Returns the actual JEI text widget geometry for the anvil cost label.
+     * Text widgets are category-owned and their position is relative to the
+     * recipe layout. This keeps callers independent from category dimensions
+     * and from the screen's current page placement.
+     */
+    static Optional<RecipeTextGeometry> anvilCostTextGeometry(IRecipeLayoutDrawable<?> layout) {
+        if (layout == null) {
+            return Optional.empty();
+        }
+        try {
+            Method ensureExtras = ensureRecipeExtrasMethod;
+            if (ensureExtras == null || !ensureExtras.getDeclaringClass().isInstance(layout)) {
+                ensureExtras = layout.getClass().getMethod("ensureRecipeExtrasAreCreated");
+                ensureExtras.setAccessible(true);
+                ensureRecipeExtrasMethod = ensureExtras;
+            }
+            ensureExtras.invoke(layout);
+
+            Field widgetsField = recipeLayoutWidgetsField;
+            if (widgetsField == null || !widgetsField.getDeclaringClass().isInstance(layout)) {
+                widgetsField = findNamedField(layout.getClass(), "allWidgets", List.class);
+                recipeLayoutWidgetsField = widgetsField;
+            }
+            if (widgetsField == null || !(widgetsField.get(layout) instanceof List<?>)) {
+                return Optional.empty();
+            }
+
+            List<ITextWidget> textWidgets = new ArrayList<ITextWidget>();
+            for (Object widget : (List<?>) widgetsField.get(layout)) {
+                if (!(widget instanceof ITextWidget) || !(widget instanceof IRecipeWidget)) {
+                    continue;
+                }
+                ITextWidget text = (ITextWidget) widget;
+                textWidgets.add(text);
+                if (isAnvilCostText(textWidgetString(text))) {
+                    return Optional.of(recipeTextGeometry(text));
+                }
+            }
+
+            // The anvil category currently contributes exactly one text
+            // widget. Keep this fallback tied to JEI's widget list rather than
+            // inventing a coordinate when a localization implementation hides
+            // the underlying FormattedText value from reflection.
+            if (textWidgets.size() == 1) {
+                return Optional.of(recipeTextGeometry(textWidgets.get(0)));
+            }
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
+            // Keep the editor usable if JEI changes its private widget list.
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Rebuilds the current JEI lookup state after recipes are added through
+     * the runtime API. JEI caches the focused recipe list, so adding a recipe
+     * alone is not enough while a RecipesGui instance is already alive.
+     */
+    static void refreshRecipeLookup(RecipesGui gui) {
+        if (gui == null) {
+            return;
+        }
+        try {
+            Field logicField = recipesGuiLogicField;
+            if (logicField == null || !logicField.getDeclaringClass().isInstance(gui)) {
+                logicField = findField(RecipesGui.class, IRecipeGuiLogic.class, false);
+                recipesGuiLogicField = logicField;
+            }
+            if (logicField == null || !(logicField.get(gui) instanceof IRecipeGuiLogic)) {
+                return;
+            }
+            IRecipeGuiLogic logic = (IRecipeGuiLogic) logicField.get(gui);
+            Field stateField = findNamedField(logic.getClass(), "state", Object.class);
+            Object state = stateField == null ? null : stateField.get(logic);
+            if (state == null) {
+                return;
+            }
+            // Keep the current category/page state. Only invalidate the two
+            // JEI caches that contain the old recipe snapshot, then ask the
+            // existing screen to lay itself out again.
+            Method focusedMethod = state.getClass().getMethod("getFocusedRecipes");
+            focusedMethod.setAccessible(true);
+            Object focused = focusedMethod.invoke(state);
+            if (focused != null) {
+                Field recipesField = findNamedField(focused.getClass(), "recipes", List.class);
+                if (recipesField != null) {
+                    recipesField.set(focused, null);
+                }
+            }
+            Field layoutsField = findNamedField(logic.getClass(),
+                    "cachedRecipeLayoutsWithButtons", Object.class);
+            if (layoutsField != null) {
+                layoutsField.set(logic, null);
+            }
+            Field categoryField = findNamedField(logic.getClass(), "cachedRecipeCategory", Object.class);
+            if (categoryField != null) {
+                categoryField.set(logic, null);
+            }
+            Method updateLayout = RecipesGui.class.getDeclaredMethod("updateLayout");
+            updateLayout.setAccessible(true);
+            updateLayout.invoke(gui);
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
+            // A stale lookup is preferable to breaking JEI if its internals
+            // change; the next normal JEI open will still rebuild the state.
+        }
+    }
+
+    private static boolean isAnvilCostText(String value) {
+        if (value == null) {
+            return false;
+        }
+        String marker = "JEI_EDITOR_COST_MARKER";
+        String translated = net.minecraft.network.chat.Component
+                .translatable("container.repair.cost", marker).getString();
+        int markerIndex = translated.indexOf(marker);
+        if (markerIndex < 0) {
+            return false;
+        }
+        String prefix = translated.substring(0, markerIndex);
+        String suffix = translated.substring(markerIndex + marker.length());
+        return value.startsWith(prefix) && value.endsWith(suffix)
+                && value.length() >= prefix.length() + suffix.length();
+    }
+
+    private static String textWidgetString(ITextWidget widget) throws ReflectiveOperationException {
+        Field field = textWidgetTextField;
+        if (field == null || !field.getDeclaringClass().isInstance(widget)) {
+            field = findNamedField(widget.getClass(), "text", List.class);
+            textWidgetTextField = field;
+        }
+        if (field == null || !(field.get(widget) instanceof List<?>)) {
+            return "";
+        }
+        StringBuilder result = new StringBuilder();
+        for (Object value : (List<?>) field.get(widget)) {
+            if (value instanceof FormattedText) {
+                if (result.length() > 0) {
+                    result.append('\n');
+                }
+                result.append(((FormattedText) value).getString());
+            }
+        }
+        return result.toString();
+    }
+
+    private static RecipeTextGeometry recipeTextGeometry(ITextWidget widget)
+            throws ReflectiveOperationException {
+        HorizontalAlignment alignment = HorizontalAlignment.LEFT;
+        Field field = textWidgetHorizontalAlignmentField;
+        if (field == null || !field.getDeclaringClass().isInstance(widget)) {
+            field = findNamedField(widget.getClass(), "horizontalAlignment", HorizontalAlignment.class);
+            textWidgetHorizontalAlignmentField = field;
+        }
+        if (field != null && field.get(widget) instanceof HorizontalAlignment) {
+            alignment = (HorizontalAlignment) field.get(widget);
+        }
+        return new RecipeTextGeometry(originalRecipeWidgetPosition(widget),
+                widget.getWidth(), widget.getHeight(), alignment);
+    }
+
+    private static ScreenPosition originalRecipeWidgetPosition(ITextWidget widget) {
+        ScreenPosition original = hiddenRecipeTextPositions.get(widget);
+        return original == null ? ((IRecipeWidget) widget).getPosition() : original;
+    }
+
+    static final class RecipeTextGeometry {
+        private final ScreenPosition position;
+        private final int width;
+        private final int height;
+        private final HorizontalAlignment horizontalAlignment;
+
+        private RecipeTextGeometry(ScreenPosition position, int width, int height,
+                                   HorizontalAlignment horizontalAlignment) {
+            this.position = position;
+            this.width = width;
+            this.height = height;
+            this.horizontalAlignment = horizontalAlignment;
+        }
+
+        ScreenPosition position() {
+            return position;
+        }
+
+        int width() {
+            return width;
+        }
+
+        int height() {
+            return height;
+        }
+
+        HorizontalAlignment horizontalAlignment() {
+            return horizontalAlignment;
+        }
     }
 
     static void restoreHiddenRecipeText() {
@@ -283,6 +492,86 @@ public final class JeiRecipeIntrospection {
             return false;
         }
         try {
+            // JEI's ingredient list owns its complete background rectangle,
+            // including empty cells and the padding around them. Looking only
+            // for an ingredient misses those pixels and lets the editor menu
+            // steal a right-click from JEI.
+            Object ingredientOverlay = runtime.get().getIngredientListOverlay();
+            if (ingredientOverlay instanceof IngredientListOverlay) {
+                IngredientListOverlay list = (IngredientListOverlay) ingredientOverlay;
+                boolean listDisplayed = list.isListDisplayed();
+                // IngredientGridWithNavigation owns the exact sidebar hitbox.
+                // Its public API is deliberately narrower than the concrete
+                // implementation, so invoke the JEI method reflectively rather
+                // than reconstructing the grid geometry here.
+                Field contentsField = ingredientOverlayContentsField;
+                if (contentsField == null || !contentsField.getDeclaringClass().isInstance(list)) {
+                    contentsField = findNamedField(list.getClass(), "contents", Object.class);
+                    ingredientOverlayContentsField = contentsField;
+                }
+                Object contents = contentsField == null ? null : contentsField.get(list);
+                if (contents != null) {
+                    Method mouseOver = ingredientContentsMouseOverMethod;
+                    if (mouseOver == null || !mouseOver.getDeclaringClass().isInstance(contents)) {
+                        try {
+                            mouseOver = contents.getClass().getMethod("isMouseOver", double.class, double.class);
+                            mouseOver.setAccessible(true);
+                            ingredientContentsMouseOverMethod = mouseOver;
+                        } catch (NoSuchMethodException ignored) {
+                            mouseOver = null;
+                        }
+                    }
+                    if (listDisplayed && mouseOver != null
+                            && Boolean.TRUE.equals(mouseOver.invoke(contents, mouseX, mouseY))) {
+                        return true;
+                    }
+                    // Keep the grid-view fallback for JEI implementations that
+                    // do not expose the concrete hit-test method.
+                    if (listDisplayed && contents instanceof IIngredientGridView
+                            && contains(((IIngredientGridView) contents).getBackgroundArea(), mouseX, mouseY)) {
+                        return true;
+                    }
+                }
+
+                if (listDisplayed) {
+                    // The search field sits outside the grid background but
+                    // is still part of the same JEI-owned right sidebar.
+                    Field searchField = ingredientOverlaySearchField;
+                    if (searchField == null || !searchField.getDeclaringClass().isInstance(list)) {
+                        searchField = findNamedField(list.getClass(), "searchField", Object.class);
+                        ingredientOverlaySearchField = searchField;
+                    }
+                    if (searchField != null && searchField.get(list) instanceof GuiTextFieldFilter
+                            && ((GuiTextFieldFilter) searchField.get(list)
+                            ).isMouseOver(mouseX, mouseY)) {
+                        return true;
+                    }
+                }
+
+                // The gear button is part of the same overlay input handler
+                // even though it is drawn in the foreground rather than in
+                // the grid/search background.
+                Field configButtonField = ingredientOverlayConfigButtonField;
+                if (configButtonField == null || !configButtonField.getDeclaringClass().isInstance(list)) {
+                    configButtonField = findNamedField(list.getClass(), "configButton", Object.class);
+                    ingredientOverlayConfigButtonField = configButtonField;
+                }
+                Object configButton = configButtonField == null ? null : configButtonField.get(list);
+                if (configButton instanceof IconButton
+                        && ((IconButton) configButton).isVisible()
+                        && ((IconButton) configButton).isMouseOver(mouseX, mouseY)) {
+                    return true;
+                }
+            }
+
+            Object bookmarkOverlay = runtime.get().getBookmarkOverlay();
+            if (bookmarkOverlay instanceof BookmarkOverlay) {
+                BookmarkOverlay bookmarks = (BookmarkOverlay) bookmarkOverlay;
+                if (bookmarks.isListDisplayed() && bookmarks.isMouseOver(mouseX, mouseY)) {
+                    return true;
+                }
+            }
+
             if (runtime.get().getScreenHelper().getGuiExclusionAreas(screen)
                     .anyMatch(area -> contains(area, mouseX, mouseY))) {
                 return true;
@@ -290,7 +579,7 @@ public final class JeiRecipeIntrospection {
             return runtime.get().getScreenHelper()
                     .getClickableIngredientUnderMouse(screen, mouseX, mouseY)
                     .findAny().isPresent();
-        } catch (RuntimeException ignored) {
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
             return false;
         }
     }
@@ -357,6 +646,11 @@ public final class JeiRecipeIntrospection {
     }
 
     private static boolean contains(Rect2i area, double mouseX, double mouseY) {
+        return area != null && mouseX >= area.getX() && mouseX < area.getX() + area.getWidth()
+                && mouseY >= area.getY() && mouseY < area.getY() + area.getHeight();
+    }
+
+    private static boolean contains(ImmutableRect2i area, double mouseX, double mouseY) {
         return area != null && mouseX >= area.getX() && mouseX < area.getX() + area.getWidth()
                 && mouseY >= area.getY() && mouseY < area.getY() + area.getHeight();
     }

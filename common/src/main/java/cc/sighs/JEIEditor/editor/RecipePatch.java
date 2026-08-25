@@ -21,7 +21,8 @@ public final class RecipePatch {
         LinkedHashMap<String, String> copy = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> entry : fields.entrySet()) {
             String key = requireText(entry.getKey(), "field key", 64);
-            String value = requireText(entry.getValue(), "field value", 512);
+            String value = requireText(entry.getValue(), "field value",
+                    RecipeEditPayloadRules.MAX_FIELD_VALUE_LENGTH);
             copy.put(key, value);
         }
         this.fields = Collections.unmodifiableMap(copy);

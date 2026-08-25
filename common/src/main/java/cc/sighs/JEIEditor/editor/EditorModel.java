@@ -33,7 +33,8 @@ public final class EditorModel {
         LinkedHashMap<String, String> propertyCopy = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> entry : properties.entrySet()) {
             propertyCopy.put(requireText(entry.getKey(), "property key", 64),
-                    requireText(entry.getValue(), "property value", 512));
+                    requireText(entry.getValue(), "property value",
+                            RecipeEditPayloadRules.MAX_FIELD_VALUE_LENGTH));
         }
         this.properties = Collections.unmodifiableMap(propertyCopy);
     }

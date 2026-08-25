@@ -44,6 +44,10 @@ public final class FuelOverrideState {
         return Collections.unmodifiableMap(new LinkedHashMap<ResourceLocation, Integer>(OVERRIDES));
     }
 
+    public static synchronized void clear() {
+        OVERRIDES.clear();
+    }
+
     public static void applyPatch(RecipePatch patch) {
         FuelRecipeEditorAdapter.itemId(patch).ifPresent(itemId -> set(itemId,
                 FuelRecipeEditorAdapter.burnTime(patch)));

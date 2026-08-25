@@ -84,6 +84,11 @@ public final class ClientEditorEvents {
                 event.getMouseX(), event.getMouseY())) {
             event.setCanceled(true);
         }
+        if (event.getButton() == 0 && event.getScreen() instanceof RecipesGui
+                && AnvilExperienceInputController.isMouseOver((RecipesGui) event.getScreen(),
+                event.getMouseX(), event.getMouseY())) {
+            event.setCanceled(true);
+        }
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
             if (event.getButton() == 0
                     && menuItemUnderMouse(event.getScreen(), event.getMouseX(), event.getMouseY()) != null) {
@@ -105,6 +110,14 @@ public final class ClientEditorEvents {
     /** Handle editor buttons before JEI's input router, then keep other edits mouse-only. */
     @SubscribeEvent
     public static void onMouseButton(ScreenEvent.MouseButtonPressed.Pre event) {
+        if (event.getButton() == 0 && event.getScreen() instanceof RecipesGui
+                && ClientEditorState.isEditing()
+                && AnvilExperienceInputController.mouseClicked((RecipesGui) event.getScreen(),
+                event.getMouseX(), event.getMouseY(), event.getButton())) {
+            closeMenu(event.getScreen());
+            event.setCanceled(true);
+            return;
+        }
         if (event.getButton() == 0 && event.getScreen() instanceof RecipesGui
                 && ClientEditorState.isEditing()
                 && FuelCountInputController.mouseClicked((RecipesGui) event.getScreen(),
@@ -152,6 +165,13 @@ public final class ClientEditorEvents {
             event.setCanceled(true);
             return;
         }
+        // JEI owns its sidebars, including empty grid cells and the search
+        // field. Short-circuit before recipe target lookup so an overlay can
+        // never be mistaken for editor-menu space.
+        if (JeiRecipeIntrospection.isOverlayAt(gui, event.getMouseX(), event.getMouseY())) {
+            closeMenu(gui);
+            return;
+        }
         if (isMenuOpen(gui)) {
             closeMenu(gui);
             event.setCanceled(true);
@@ -159,10 +179,12 @@ public final class ClientEditorEvents {
         }
         Optional<EditorModel> deletionTarget = JeiRecipeEditorPlugin.recipeDeletionTargetAtMouse(
                 gui, event.getMouseX(), event.getMouseY());
-        if (deletionTarget.isPresent()) {
+        boolean overRecipeLayout = gui.getRecipeLayoutUnderMouse(event.getMouseX(), event.getMouseY()).isPresent();
+        if (deletionTarget.isPresent() || overRecipeLayout) {
             Optional<EditorModel> creationTarget = JeiRecipeEditorPlugin.recipeCreationTargetAtMouse(
                     gui, event.getMouseX(), event.getMouseY());
-            boolean clearableInput = !ClientEditorState.isRecipeDeleted(deletionTarget.get().recipeId())
+            boolean clearableInput = deletionTarget.isPresent()
+                    && !ClientEditorState.isRecipeDeleted(deletionTarget.get().recipeId())
                     && JeiRecipeEditorPlugin.hasEditableInputAtMouse(
                     gui, event.getMouseX(), event.getMouseY());
             openMenu(gui, event.getMouseX(), event.getMouseY(), deletionTarget, clearableInput, creationTarget);
@@ -170,8 +192,9 @@ public final class ClientEditorEvents {
             return;
         }
         if (isBlankJeiArea(gui, event.getMouseX(), event.getMouseY())) {
+            Optional<EditorModel> creationTarget = JeiRecipeEditorPlugin.recipeCreationTargetOnPage(gui);
             openMenu(gui, event.getMouseX(), event.getMouseY(), Optional.empty(), false,
-                    JeiRecipeEditorPlugin.recipeCreationTargetOnPage(gui));
+                    creationTarget);
             event.setCanceled(true);
         }
     }
@@ -238,6 +261,12 @@ public final class ClientEditorEvents {
                 && FuelCountInputController.keyPressed((RecipesGui) event.getScreen(),
                 event.getKeyCode(), event.getScanCode(), event.getModifiers())) {
             event.setCanceled(true);
+            return;
+        }
+        if (event.getScreen() instanceof RecipesGui
+                && AnvilExperienceInputController.keyPressed((RecipesGui) event.getScreen(),
+                event.getKeyCode(), event.getScanCode(), event.getModifiers())) {
+            event.setCanceled(true);
         }
     }
 
@@ -253,6 +282,12 @@ public final class ClientEditorEvents {
                 && FuelCountInputController.charTyped((RecipesGui) event.getScreen(),
                 event.getCodePoint(), event.getModifiers())) {
             event.setCanceled(true);
+            return;
+        }
+        if (event.getScreen() instanceof RecipesGui
+                && AnvilExperienceInputController.charTyped((RecipesGui) event.getScreen(),
+                event.getCodePoint(), event.getModifiers())) {
+            event.setCanceled(true);
         }
     }
 
@@ -263,6 +298,10 @@ public final class ClientEditorEvents {
     @SubscribeEvent
     public static void onRecipesUpdated(RecipesUpdatedEvent event) {
         ClientEditorState.clearPreview();
+        // JEI handles this event too and rebuilds its lookup maps after the
+        // callback. Restore synthetic pages on the next client task so JEI
+        // cannot overwrite them again.
+        JeiRecipeEditorPlugin.scheduleCreatedAnvilRestore();
         if (ClientEditorState.isEditing()) {
             ClientEditorState.setLastDrop("Recipes synchronized from server");
         }
@@ -273,6 +312,7 @@ public final class ClientEditorEvents {
         if (ClientEditorState.isRecipeScreen(event.getScreen())) {
             JeiIngredientDragController.cancel((RecipesGui) event.getScreen());
             FuelCountInputController.close((RecipesGui) event.getScreen());
+            AnvilExperienceInputController.close((RecipesGui) event.getScreen());
             initializedRecipeScreens.remove(event.getScreen());
             closeMenu(event.getScreen());
             closeRecipeIdInput(event.getScreen());
@@ -285,6 +325,7 @@ public final class ClientEditorEvents {
     public static void onScreenRenderPre(ScreenEvent.Render.Pre event) {
         if (event.getScreen() instanceof RecipesGui) {
             FuelCountInputController.prepare((RecipesGui) event.getScreen());
+            AnvilExperienceInputController.prepare((RecipesGui) event.getScreen());
             JeiRecipeEditorPlugin.refreshPendingPreviews((RecipesGui) event.getScreen());
         }
     }
@@ -300,6 +341,8 @@ public final class ClientEditorEvents {
                     event.getMouseX(), event.getMouseY());
             event.getGuiGraphics().pose().popPose();
             FuelCountInputController.render((RecipesGui) event.getScreen(), event.getGuiGraphics(),
+                    event.getMouseX(), event.getMouseY());
+            AnvilExperienceInputController.render((RecipesGui) event.getScreen(), event.getGuiGraphics(),
                     event.getMouseX(), event.getMouseY());
             renderRecipeIdInput(event);
             renderMenuAboveJei(event);
@@ -437,6 +480,9 @@ public final class ClientEditorEvents {
     private static void openMenu(RecipesGui screen, double mouseX, double mouseY,
                                  Optional<EditorModel> deletionTarget, boolean clearableInput,
                                  Optional<EditorModel> creationTarget) {
+        // A context-menu click does not travel through JEI's left-click field
+        // handler. Commit a focused anvil cost before the menu can submit it.
+        AnvilExperienceInputController.commitAll(screen);
         closeMenu(screen);
         List<MenuItem> items = new ArrayList<MenuItem>();
         items.add(new MenuItem(label().getString(), () -> pressEdit(screen)));
@@ -447,6 +493,7 @@ public final class ClientEditorEvents {
             items.add(new MenuItem("Reload", () -> reload(screen)));
         } else {
             items.add(new MenuItem("Save", () -> {
+                AnvilExperienceInputController.commitAll(screen);
                 if (ClientEditorState.getPendingPatches().isEmpty()) {
                     ClientEditorState.setLastDrop("No pending recipe edit");
                     return;
@@ -492,10 +539,11 @@ public final class ClientEditorEvents {
             }
             if (creationTarget.isPresent()) {
                 EditorModel target = creationTarget.get();
-                boolean creationStaged = ClientEditorState.isCreationStaged(target.recipeId());
+                boolean creationStaged = ClientEditorState.isCreationStaged(target.recipeId())
+                        || ClientEditorState.isRecipeDeleted(target.recipeId());
                 items.add(new MenuItem(creationStaged ? "Cancel New Recipe" : "New Recipe", () -> {
                     try {
-                        if (ClientEditorState.isCreationStaged(target.recipeId())) {
+                        if (creationStaged) {
                             if (ClientEditorState.cancelCreationDraft(screen, target.recipeId())) {
                                 closeRecipeIdInput(screen);
                                 ClientEditorState.setLastDrop("New recipe canceled");
@@ -525,6 +573,9 @@ public final class ClientEditorEvents {
     }
 
     private static void reload(net.minecraft.client.gui.screens.Screen screen) {
+        if (screen instanceof RecipesGui) {
+            AnvilExperienceInputController.commitAll((RecipesGui) screen);
+        }
         NeoForge121Network.sendReload();
         ClientEditorState.setLastDrop("Saved recipe edits reload submitted");
         screen.onClose();

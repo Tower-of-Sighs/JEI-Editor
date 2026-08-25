@@ -13,11 +13,15 @@ import cc.sighs.JEIEditor.platform.recipe.RecipeAdapterSupport;
 import cc.sighs.JEIEditor.platform.recipe.RecipeCreationAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeDeletionAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
+import cc.sighs.JEIEditor.platform.recipe.VanillaSpecialRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.mojang.serialization.JsonOps;
 import net.minecraft.core.HolderLookup;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
@@ -29,8 +33,12 @@ import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.item.crafting.ShapelessRecipe;
 import net.minecraft.world.item.crafting.AbstractCookingRecipe;
 import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.crafting.StonecutterRecipe;
+import net.minecraft.world.item.crafting.SmithingRecipe;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
+import net.neoforged.neoforge.registries.datamaps.builtin.Compostable;
+import net.neoforged.neoforge.registries.datamaps.builtin.NeoForgeDataMaps;
 import mezz.jei.library.gui.helpers.CraftingGridHelper;
 
 import java.io.IOException;
@@ -59,6 +67,12 @@ public final class RecipeEditsApplier {
         if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
             return canApplyFuel(server, patch);
         }
+        if (JeiVanillaRecipeEditorAdapter.isSyntheticPatch(patch)) {
+            if ("jei:anvil".equals(patch.serializerId())) {
+                return canApplyAnvil(server, patch);
+            }
+            return JeiVanillaRecipeEditorAdapter.validatePatch(patch);
+        }
         ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
         if (recipeId == null) {
             return false;
@@ -82,6 +96,19 @@ public final class RecipeEditsApplier {
     public static CompletableFuture<Void> apply(MinecraftServer server, RecipePatch patch) {
         if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
             return applyFuel(server, patch);
+        }
+        if (JeiVanillaRecipeEditorAdapter.isSyntheticPatch(patch)) {
+            if (JeiVanillaRecipeEditorAdapter.isCompostingPatch(patch)) {
+                return saveComposting(server, patch)
+                        .thenCompose(ignored -> reloadComposting(server, patch));
+            }
+            if ("jei:anvil".equals(patch.serializerId())) {
+                return saveAnvil(server, patch)
+                        .thenCompose(ignored -> reloadSaved(server, patch));
+            }
+            return JeiVanillaRecipeEditorAdapter.validatePatch(patch)
+                    ? CompletableFuture.completedFuture(null)
+                    : failedFuture(new IOException("synthetic JEI patch is invalid: " + patch.recipeId()));
         }
         try {
             ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
@@ -121,6 +148,17 @@ public final class RecipeEditsApplier {
         if (FuelRecipeEditorAdapter.isFuelPatch(patch)) {
             return saveFuel(server, patch);
         }
+        if (JeiVanillaRecipeEditorAdapter.isSyntheticPatch(patch)) {
+            if (JeiVanillaRecipeEditorAdapter.isCompostingPatch(patch)) {
+                return saveComposting(server, patch);
+            }
+            if ("jei:anvil".equals(patch.serializerId())) {
+                return saveAnvil(server, patch);
+            }
+            return canApply(server, patch)
+                    ? CompletableFuture.completedFuture(null)
+                    : failedFuture(new IOException("synthetic JEI patch is invalid: " + patch.recipeId()));
+        }
         try {
             ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
             if (recipeId == null) {
@@ -158,6 +196,24 @@ public final class RecipeEditsApplier {
             FuelOverrideState.set(itemId.get(), burnTime);
             return CompletableFuture.completedFuture(null);
         }
+        if (JeiVanillaRecipeEditorAdapter.isSyntheticPatch(patch)) {
+            if (JeiVanillaRecipeEditorAdapter.isCompostingPatch(patch)) {
+                return reloadComposting(server, patch);
+            }
+            // Older versions allowed editing generated JEI anvil pages and
+            // may have left such patches in SavedData. They are no longer
+            // valid under the anvil read-only policy. Drop them during the
+            // next reload so one stale entry cannot abort the whole batch and
+            // prevent normal crafting output edits from being synchronized.
+            if ("jei:anvil".equals(patch.serializerId())
+                    && !RecipePatchSemantics.isCreation(patch)) {
+                RecipeEditsSavedData.get(server).remove(patch.recipeId());
+                return CompletableFuture.completedFuture(null);
+            }
+            return canApply(server, patch)
+                    ? CompletableFuture.completedFuture(null)
+                    : failedFuture(new IOException("saved synthetic JEI patch is invalid: " + patch.recipeId()));
+        }
         try {
             ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
             if (recipeId == null) {
@@ -188,6 +244,10 @@ public final class RecipeEditsApplier {
     public static CompletableFuture<Void> reset(MinecraftServer server, String recipeIdText, EditorModel baseModel) {
         if (FuelRecipeEditorAdapter.itemIdFromRecipeId(recipeIdText).isPresent()) {
             return resetFuel(server, recipeIdText, baseModel);
+        }
+        RecipePatch savedSynthetic = RecipeEditsSavedData.get(server).patches().get(recipeIdText);
+        if (JeiVanillaRecipeEditorAdapter.isSyntheticPatch(savedSynthetic)) {
+            return resetSynthetic(server, savedSynthetic);
         }
         try {
             ResourceLocation recipeId = ResourceLocation.tryParse(recipeIdText);
@@ -240,6 +300,31 @@ public final class RecipeEditsApplier {
                 : RecipeEditorAdapters.createModel(holder, server.registryAccess()).orElse(null);
     }
 
+    /**
+     * Removes persisted synthetic entries whose generated datapack artifact no
+     * longer exists. SavedData is a world cache, not an independent source of
+     * truth for created anvil recipes; this also handles a user deleting the
+     * generated datapack outside the editor.
+     */
+    public static int pruneMissingSavedArtifacts(MinecraftServer server) {
+        if (server == null) {
+            return 0;
+        }
+        RecipeEditsSavedData data = RecipeEditsSavedData.get(server);
+        int removed = 0;
+        for (RecipePatch patch : new ArrayList<RecipePatch>(data.patches().values())) {
+            if (!JeiVanillaRecipeEditorAdapter.isCreatedAnvilPatch(patch)) {
+                continue;
+            }
+            Path path = anvilDataPath(server, ResourceLocation.tryParse(patch.recipeId()));
+            if (path == null || Files.notExists(path)) {
+                data.remove(patch.recipeId());
+                removed++;
+            }
+        }
+        return removed;
+    }
+
     private static boolean canApplyFuel(MinecraftServer server, RecipePatch patch) {
         if (!FuelRecipeEditorAdapter.itemIdFromRecipeId(patch.recipeId()).isPresent()) {
             return false;
@@ -261,6 +346,44 @@ public final class RecipeEditsApplier {
         }
         EditorModel model = currentModel(server, patch);
         return model != null && model.baseFingerprint().equals(patch.baseFingerprint());
+    }
+
+    /** Existing JEI anvil pages are generated views, not editable recipe
+     * records. Only drafts created by this editor may be saved or deleted. */
+    private static boolean canApplyAnvil(MinecraftServer server, RecipePatch patch) {
+        if (server == null || patch == null || !"jei:anvil".equals(patch.serializerId())) {
+            return false;
+        }
+        if (RecipePatchSemantics.isCreation(patch)) {
+            ResourceLocation id = ResourceLocation.tryParse(patch.recipeId());
+            return id != null && "jeieditor".equals(id.getNamespace())
+                    && server.getRecipeManager().byKey(id).isEmpty()
+                    && JeiVanillaRecipeEditorAdapter.validatePatch(patch);
+        }
+        if (!RecipePatchSemantics.isDeletion(patch)) {
+            return false;
+        }
+        return isCreatedAnvilIdentity(server, patch);
+    }
+
+    private static boolean isCreatedAnvilIdentity(MinecraftServer server, RecipePatch patch) {
+        ResourceLocation id = ResourceLocation.tryParse(patch.recipeId());
+        if (id == null || !"jeieditor".equals(id.getNamespace())
+                || server.getRecipeManager().byKey(id).isPresent()) {
+            return false;
+        }
+        EditorModel baseModel = RecipeEditsSavedData.get(server).baseModel(patch.recipeId());
+        if (baseModel != null && RecipeCreationAdapter.isCreatedModel(baseModel)
+                && "jei:anvil".equals(baseModel.serializerId())) {
+            return true;
+        }
+        RecipePatch saved = RecipeEditsSavedData.get(server).patches().get(patch.recipeId());
+        if (JeiVanillaRecipeEditorAdapter.isCreatedAnvilPatch(saved)) {
+            return true;
+        }
+        // A draft can be deleted before its first save. Its generated
+        // fingerprint and namespace still prove it came from the creation UI.
+        return patch.baseFingerprint().startsWith("new:");
     }
 
     private static CompletableFuture<Void> applyFuel(MinecraftServer server, RecipePatch patch) {
@@ -310,6 +433,254 @@ public final class RecipeEditsApplier {
     private static Path fuelDataMapPath(MinecraftServer server) {
         return packRoot(server).resolve("data").resolve("neoforge")
                 .resolve("data_maps").resolve("item").resolve("furnace_fuels.json");
+    }
+
+    private static CompletableFuture<Void> saveComposting(MinecraftServer server, RecipePatch patch) {
+        try {
+            if (!JeiVanillaRecipeEditorAdapter.validatePatch(patch)) {
+                throw new IOException("composting patch is invalid: " + patch.recipeId());
+            }
+            ResourceLocation original = patchItem(patch, "match.input.0");
+            ResourceLocation replacement = patchItem(patch, "input.0");
+            if (replacement == null) {
+                replacement = original;
+            }
+            float chance = compostChance(patch);
+            if (original == null || replacement == null || chance <= 0.0F) {
+                throw new IOException("composting patch has no valid input or chance: " + patch.recipeId());
+            }
+            Path path = compostDataMapPath(server);
+            JsonObject root = readJsonObject(path);
+            RecipePatch previous = RecipeEditsSavedData.get(server).patches().get(patch.recipeId());
+            if (JeiVanillaRecipeEditorAdapter.isCompostingPatch(previous)) {
+                removeCompostPatch(root, previous);
+            }
+            applyCompostPatch(root, original, replacement, chance);
+            Files.createDirectories(path.getParent());
+            ensurePackMetadata(server);
+            ensureGeneratedPackSelected(server);
+            writeAtomically(path, root.toString().getBytes(StandardCharsets.UTF_8));
+            return CompletableFuture.completedFuture(null);
+        } catch (IOException | RuntimeException exception) {
+            return failedFuture(exception);
+        }
+    }
+
+    private static CompletableFuture<Void> reloadComposting(MinecraftServer server, RecipePatch patch) {
+        try {
+            if (!JeiVanillaRecipeEditorAdapter.validatePatch(patch)) {
+                throw new IOException("saved composting patch is invalid: " + patch.recipeId());
+            }
+            ResourceLocation original = patchItem(patch, "match.input.0");
+            ResourceLocation replacement = patchItem(patch, "input.0");
+            if (replacement == null) {
+                replacement = original;
+            }
+            float chance = compostChance(patch);
+            if (original == null || replacement == null || chance <= 0.0F) {
+                throw new IOException("saved composting patch has no valid input or chance: " + patch.recipeId());
+            }
+            Map<ResourceKey<Item>, Compostable> values =
+                    BuiltInRegistries.ITEM.getDataMap(NeoForgeDataMaps.COMPOSTABLES);
+            ResourceKey<Item> originalKey = ResourceKey.create(Registries.ITEM, original);
+            ResourceKey<Item> replacementKey = ResourceKey.create(Registries.ITEM, replacement);
+            Compostable originalValue = values.get(originalKey);
+            if (!original.equals(replacement)) {
+                values.remove(originalKey);
+            }
+            values.put(replacementKey, new Compostable(chance,
+                    originalValue != null && originalValue.canVillagerCompost()));
+            return CompletableFuture.completedFuture(null);
+        } catch (IOException | RuntimeException exception) {
+            return failedFuture(exception);
+        }
+    }
+
+    private static CompletableFuture<Void> resetSynthetic(MinecraftServer server, RecipePatch patch) {
+        if (JeiVanillaRecipeEditorAdapter.isCreatedAnvilPatch(patch)) {
+            try {
+                Path path = anvilDataPath(server, ResourceLocation.tryParse(patch.recipeId()));
+                if (path != null) {
+                    Files.deleteIfExists(path);
+                    pruneEmptyParents(path.getParent());
+                }
+                return CompletableFuture.completedFuture(null);
+            } catch (IOException | RuntimeException exception) {
+                return failedFuture(exception);
+            }
+        }
+        if (!JeiVanillaRecipeEditorAdapter.isCompostingPatch(patch)) {
+            return CompletableFuture.completedFuture(null);
+        }
+        try {
+            Path path = compostDataMapPath(server);
+            JsonObject root = readJsonObject(path);
+            removeCompostPatch(root, patch);
+            if (root.getAsJsonObject("values").size() == 0
+                    && (!root.has("remove") || root.getAsJsonArray("remove").size() == 0)) {
+                Files.deleteIfExists(path);
+                pruneEmptyParents(path.getParent());
+            } else {
+                writeAtomically(path, root.toString().getBytes(StandardCharsets.UTF_8));
+            }
+
+            ResourceLocation original = patchItem(patch, "match.input.0");
+            ResourceLocation replacement = patchItem(patch, "input.0");
+            if (replacement == null) {
+                replacement = original;
+            }
+            Map<ResourceKey<Item>, Compostable> values =
+                    BuiltInRegistries.ITEM.getDataMap(NeoForgeDataMaps.COMPOSTABLES);
+            if (replacement != null && !replacement.equals(original)) {
+                values.remove(ResourceKey.create(Registries.ITEM, replacement));
+            }
+            float chance = compostChance(patch);
+            if (original != null && chance > 0.0F) {
+                values.put(ResourceKey.create(Registries.ITEM, original), new Compostable(chance));
+            }
+            return CompletableFuture.completedFuture(null);
+        } catch (IOException | RuntimeException exception) {
+            return failedFuture(exception);
+        }
+    }
+
+    private static Path compostDataMapPath(MinecraftServer server) {
+        return packRoot(server).resolve("data").resolve("neoforge")
+                .resolve("data_maps").resolve("item").resolve("compostables.json");
+    }
+
+    /**
+     * Anvil recipes are not vanilla RecipeManager entries, so their datapack
+     * representation lives under the mod's data namespace instead of the
+     * vanilla recipe directory. SavedData remains the runtime source used by
+     * SyntheticRecipeOverrides; this file makes the accepted edit durable and
+     * inspectable in the generated datapack as well.
+     */
+    private static CompletableFuture<Void> saveAnvil(MinecraftServer server, RecipePatch patch) {
+        try {
+            if (!canApplyAnvil(server, patch)) {
+                throw new IOException("anvil patch is stale or unsupported: " + patch.recipeId());
+            }
+            ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
+            Path path = anvilDataPath(server, recipeId);
+            if (path == null) {
+                throw new IOException("invalid anvil recipe id: " + patch.recipeId());
+            }
+            ensurePackMetadata(server);
+            ensureGeneratedPackSelected(server);
+            if (RecipePatchSemantics.isDeletion(patch)) {
+                Files.deleteIfExists(path);
+                pruneEmptyParents(path.getParent());
+            } else {
+                Files.createDirectories(path.getParent());
+                writeAtomically(path, anvilDatapackJson(patch).toString()
+                        .getBytes(StandardCharsets.UTF_8));
+            }
+            return CompletableFuture.completedFuture(null);
+        } catch (IOException | RuntimeException exception) {
+            return failedFuture(exception);
+        }
+    }
+
+    private static Path anvilDataPath(MinecraftServer server, ResourceLocation recipeId) {
+        if (server == null || recipeId == null || !"jeieditor".equals(recipeId.getNamespace())) {
+            return null;
+        }
+        return packRoot(server).resolve("data").resolve("jeieditor")
+                .resolve("jei_editor").resolve("anvil")
+                .resolve(recipeId.getPath() + ".json");
+    }
+
+    private static JsonObject anvilDatapackJson(RecipePatch patch) {
+        JsonObject root = new JsonObject();
+        root.addProperty("type", patch.serializerId());
+        root.addProperty("id", patch.recipeId());
+        JsonObject fields = new JsonObject();
+        for (Map.Entry<String, String> entry : patch.fields().entrySet()) {
+            fields.addProperty(entry.getKey(), entry.getValue());
+        }
+        root.add("fields", fields);
+        addAnvilStack(root, "left", patch, "input.0");
+        addAnvilStack(root, "right", patch, "input.1");
+        addAnvilStack(root, "result", patch, "output");
+        return root;
+    }
+
+    private static void addAnvilStack(JsonObject root, String name, RecipePatch patch, String prefix) {
+        JsonObject stack = new JsonObject();
+        String item = patch.fields().get(prefix + ".item");
+        String count = patch.fields().get(prefix + ".count");
+        stack.addProperty("item", item == null ? "minecraft:air" : item);
+        stack.addProperty("count", count == null ? "0" : count);
+        String encoded = patch.fields().get(prefix + ".stack");
+        if (encoded != null) {
+            stack.addProperty("stack", encoded);
+        }
+        root.add(name, stack);
+    }
+
+    private static void applyCompostPatch(JsonObject root, ResourceLocation original,
+                                          ResourceLocation replacement, float chance) {
+        JsonObject values = root.has("values") && root.get("values").isJsonObject()
+                ? root.getAsJsonObject("values") : new JsonObject();
+        JsonObject value = new JsonObject();
+        value.addProperty("chance", chance);
+        values.add(replacement.toString(), value);
+        root.add("values", values);
+        if (!original.equals(replacement)) {
+            JsonArray removals = root.has("remove") && root.get("remove").isJsonArray()
+                    ? root.getAsJsonArray("remove") : new JsonArray();
+            if (!jsonArrayContains(removals, original.toString())) {
+                removals.add(original.toString());
+            }
+            root.add("remove", removals);
+        }
+    }
+
+    private static void removeCompostPatch(JsonObject root, RecipePatch patch) {
+        JsonObject values = root.has("values") && root.get("values").isJsonObject()
+                ? root.getAsJsonObject("values") : new JsonObject();
+        ResourceLocation original = patchItem(patch, "match.input.0");
+        ResourceLocation replacement = patchItem(patch, "input.0");
+        if (replacement == null) {
+            replacement = original;
+        }
+        if (replacement != null) {
+            values.remove(replacement.toString());
+        }
+        root.add("values", values);
+        if (original != null && root.has("remove") && root.get("remove").isJsonArray()) {
+            JsonArray removals = root.getAsJsonArray("remove");
+            for (int index = removals.size() - 1; index >= 0; index--) {
+                if (removals.get(index).isJsonPrimitive()
+                        && original.toString().equals(removals.get(index).getAsString())) {
+                    removals.remove(index);
+                }
+            }
+        }
+    }
+
+    private static boolean jsonArrayContains(JsonArray values, String expected) {
+        for (JsonElement value : values) {
+            if (value.isJsonPrimitive() && expected.equals(value.getAsString())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static ResourceLocation patchItem(RecipePatch patch, String prefix) {
+        return patch == null ? null : ResourceLocation.tryParse(
+                patch.fields().get(prefix + ".item"));
+    }
+
+    private static float compostChance(RecipePatch patch) {
+        try {
+            return Float.parseFloat(patch.fields().get(
+                    JeiVanillaRecipeEditorAdapter.COMPOST_CHANCE_PROPERTY));
+        } catch (RuntimeException exception) {
+            return -1.0F;
+        }
     }
 
     private static void writeFuelValue(Path path, ResourceLocation itemId, int burnTime) throws IOException {
@@ -538,8 +909,9 @@ public final class RecipeEditsApplier {
         }
         ResourceLocation id = ResourceLocation.tryParse(patch.recipeId());
         ResourceLocation output = ResourceLocation.tryParse(patch.fields().get("output.item"));
-        if (id == null || !"jeieditor".equals(id.getNamespace()) || output == null
-                || !BuiltInRegistries.ITEM.containsKey(output)) {
+        boolean smithingTrim = "minecraft:smithing_trim".equals(patch.serializerId());
+        if (id == null || !"jeieditor".equals(id.getNamespace())
+                || (!smithingTrim && (output == null || !BuiltInRegistries.ITEM.containsKey(output)))) {
             return Optional.empty();
         }
         int count;
@@ -548,14 +920,16 @@ public final class RecipeEditsApplier {
         } catch (RuntimeException exception) {
             return Optional.empty();
         }
-        if (count < 1 || count > 64) {
+        if (smithingTrim ? count != 0 : (count < 1 || count > 64)) {
             return Optional.empty();
         }
         if (!RecipeCreationAdapter.isCreatableSerializer(patch.serializerId())) {
             return Optional.empty();
         }
-        if (!"minecraft:crafting_shaped".equals(patch.serializerId())
-                && !"minecraft:crafting_shapeless".equals(patch.serializerId())) {
+        boolean crafting = "minecraft:crafting_shaped".equals(patch.serializerId())
+                || "minecraft:crafting_shapeless".equals(patch.serializerId());
+        boolean special = VanillaSpecialRecipeEditorAdapter.supportsSerializer(patch.serializerId());
+        if (!crafting && !special) {
             try {
                 float experience = Float.parseFloat(patch.fields().getOrDefault("recipe.experience", "0.0"));
                 int cookingTime = Integer.parseInt(patch.fields().getOrDefault("recipe.cooking_time", "200"));
@@ -589,6 +963,20 @@ public final class RecipeEditsApplier {
                 }
             }
             recipe.add("ingredients", ingredients);
+        } else if ("minecraft:stonecutting".equals(patch.serializerId())) {
+            if (creationGrid.isEmpty() || creationGrid.get(0) == null) {
+                return Optional.empty();
+            }
+            recipe.add("ingredient", ingredientJson(creationGrid.get(0)));
+        } else if ("minecraft:smithing_transform".equals(patch.serializerId())
+                || "minecraft:smithing_trim".equals(patch.serializerId())) {
+            if (creationGrid.size() < 3 || creationGrid.get(0) == null
+                    || creationGrid.get(1) == null || creationGrid.get(2) == null) {
+                return Optional.empty();
+            }
+            recipe.add("template", ingredientJson(creationGrid.get(0)));
+            recipe.add("base", ingredientJson(creationGrid.get(1)));
+            recipe.add("addition", ingredientJson(creationGrid.get(2)));
         } else {
             if (creationGrid.isEmpty() || creationGrid.get(0) == null) {
                 return Optional.empty();
@@ -597,15 +985,26 @@ public final class RecipeEditsApplier {
             recipe.addProperty("experience", patch.fields().getOrDefault("recipe.experience", "0.0"));
             recipe.addProperty("cookingtime", patch.fields().getOrDefault("recipe.cooking_time", "200"));
         }
-        JsonObject result = new JsonObject();
-        result.addProperty("id", output.toString());
-        result.addProperty("count", count);
-        recipe.add("result", result);
+        if (!smithingTrim) {
+            JsonObject result = new JsonObject();
+            result.addProperty("id", output.toString());
+            result.addProperty("count", count);
+            recipe.add("result", result);
+        }
         return Optional.of(recipe);
     }
 
     private static List<EditorIngredient> creationInputGrid(RecipePatch patch) {
-        int size = CookingRecipeEditorAdapter.supportsSerializer(patch.serializerId()) ? 1 : 9;
+        int size;
+        if (CookingRecipeEditorAdapter.supportsSerializer(patch.serializerId())
+                || "minecraft:stonecutting".equals(patch.serializerId())) {
+            size = 1;
+        } else if ("minecraft:smithing_transform".equals(patch.serializerId())
+                || "minecraft:smithing_trim".equals(patch.serializerId())) {
+            size = 3;
+        } else {
+            size = 9;
+        }
         List<EditorIngredient> grid = new ArrayList<EditorIngredient>(size);
         for (int index = 0; index < size; index++) {
             String prefix = "input." + index;
@@ -663,11 +1062,12 @@ public final class RecipeEditsApplier {
                 .filter(slot -> "output".equals(slot.role()))
                 .findFirst()
                 .orElse(null);
-        if (outputSlot == null || outputSlot.ingredient() == null) {
+        if (outputSlot == null) {
             return Optional.empty();
         }
-        EditorIngredient output = patchedIngredient(outputSlot, patch.fields());
-        if (output == null) {
+        boolean smithingTrim = "minecraft:smithing_trim".equals(patch.serializerId());
+        EditorIngredient output = smithingTrim ? null : patchedIngredient(outputSlot, patch.fields());
+        if (!smithingTrim && output == null) {
             return Optional.empty();
         }
 
@@ -709,11 +1109,50 @@ public final class RecipeEditsApplier {
                     (AbstractCookingRecipe) holder.value(), patch, inputs.get(0)));
             recipe.addProperty("experience", cookingExperience(model, patch));
             recipe.addProperty("cookingtime", cookingTime(model, patch));
+        } else if (holder.value() instanceof StonecutterRecipe) {
+            if (inputs.size() != 1 || inputs.get(0) == null) {
+                return Optional.empty();
+            }
+            recipe.add("ingredient", vanillaIngredientJson(
+                    ((StonecutterRecipe) holder.value()).getIngredients().get(0),
+                    patch, "input.0", inputs.get(0)));
+        } else if (holder.value() instanceof SmithingRecipe) {
+            if (inputs.size() != 3 || inputs.get(0) == null || inputs.get(1) == null
+                    || inputs.get(2) == null) {
+                return Optional.empty();
+            }
+            List<Ingredient> originals = VanillaSpecialRecipeEditorAdapter
+                    .ingredientDefinitions(holder.value());
+            if (originals.size() != 3) {
+                return Optional.empty();
+            }
+            recipe.add("template", vanillaIngredientJson(originals.get(0), patch, "input.0", inputs.get(0)));
+            recipe.add("base", vanillaIngredientJson(originals.get(1), patch, "input.1", inputs.get(1)));
+            recipe.add("addition", vanillaIngredientJson(originals.get(2), patch, "input.2", inputs.get(2)));
         } else {
             return Optional.empty();
         }
-        recipe.add("result", resultJson(output));
+        if (output != null) {
+            recipe.add("result", resultJson(output));
+        }
         return Optional.of(recipe);
+    }
+
+    private static JsonElement vanillaIngredientJson(Ingredient original, RecipePatch patch,
+                                                      String slotKey, EditorIngredient current) {
+        if (patch.fields().containsKey(slotKey + ".item")
+                || patch.fields().containsKey(slotKey + ".count")) {
+            return ingredientJson(current);
+        }
+        try {
+            Optional<JsonElement> encoded = Ingredient.CODEC.encodeStart(JsonOps.INSTANCE, original).result();
+            if (encoded.isPresent()) {
+                return encoded.get();
+            }
+        } catch (RuntimeException ignored) {
+            // Fall back to the concrete representative when a codec is unavailable.
+        }
+        return ingredientJson(current);
     }
 
     /**

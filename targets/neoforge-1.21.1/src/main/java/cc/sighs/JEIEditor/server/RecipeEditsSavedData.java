@@ -102,7 +102,9 @@ public final class RecipeEditsSavedData extends SavedData {
 
     public RecipePatch put(RecipePatch patch, EditorModel baseModel) {
         RecipePatch previous = patches.put(patch.recipeId(), patch);
-        baseModels.putIfAbsent(patch.recipeId(), baseModel);
+        if (baseModel != null) {
+            baseModels.putIfAbsent(patch.recipeId(), baseModel);
+        }
         setDirty();
         return previous;
     }

@@ -47,7 +47,8 @@ public final class RecipeAuditEntry {
         if (fields.size() > 128) throw new IllegalArgumentException("audit fields must contain at most 128 entries");
         LinkedHashMap<String, String> copy = new LinkedHashMap<String, String>();
         for (Map.Entry<String, String> entry : fields.entrySet()) {
-            copy.put(requireText(entry.getKey(), "audit field key", 64), requireText(entry.getValue(), "audit field value", 512));
+            copy.put(requireText(entry.getKey(), "audit field key", 64), requireText(entry.getValue(),
+                    "audit field value", RecipeEditPayloadRules.MAX_FIELD_VALUE_LENGTH));
         }
         return Collections.unmodifiableMap(copy);
     }

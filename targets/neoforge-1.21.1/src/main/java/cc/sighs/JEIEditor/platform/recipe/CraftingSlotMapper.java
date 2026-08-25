@@ -38,13 +38,27 @@ public final class CraftingSlotMapper {
         if (namedSlot.isPresent() && hasInputSlot(model, namedSlot.get())) {
             return namedSlot.get();
         }
+        if (namedSlot.isPresent()) {
+            String mapped = model.properties().get(
+                    JeiVanillaRecipeEditorAdapter.NAMED_SLOT_PROPERTY_PREFIX + namedSlot.get());
+            if (hasInputSlot(model, mapped)) {
+                return mapped;
+            }
+        }
 
         int inputCount = inputCount(model);
         if (inputCount == 0) {
             return null;
         }
         if (!isCrafting(model)) {
-            return inputOrdinal(slots, target) == 0 ? "input.0" : null;
+            int ordinal = inputOrdinal(slots, target);
+            String mapped = model.properties().get(
+                    JeiVanillaRecipeEditorAdapter.VISUAL_INPUT_PROPERTY_PREFIX + ordinal);
+            if (hasInputSlot(model, mapped)) {
+                return mapped;
+            }
+            String ordinalKey = "input." + ordinal;
+            return ordinal >= 0 && hasInputSlot(model, ordinalKey) ? ordinalKey : null;
         }
 
         // New shaped models always expose the complete workbench grid. Keep
@@ -86,6 +100,9 @@ public final class CraftingSlotMapper {
     }
 
     private static boolean hasInputSlot(EditorModel model, String key) {
+        if (key == null) {
+            return false;
+        }
         for (cc.sighs.JEIEditor.editor.EditorSlot slot : model.slots()) {
             if (key.equals(slot.key()) && "input".equals(slot.role())) {
                 return true;

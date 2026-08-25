@@ -43,6 +43,8 @@ public final class RecipeCreationRules {
         if (isCookingSerializer(source.serializerId())) {
             properties.put("experience", source.properties().getOrDefault("experience", "0.0"));
             properties.put("cooking_time", source.properties().getOrDefault("cooking_time", "200"));
+        } else if ("jei:anvil".equals(source.serializerId())) {
+            properties.put("anvil.cost", source.properties().getOrDefault("anvil.cost", "1"));
         }
         properties.put(SOURCE_RECIPE_FIELD, source.recipeId());
         properties.put(RecipePatchSemantics.CREATED_FIELD, RecipePatchSemantics.CREATED_VALUE);
@@ -76,6 +78,8 @@ public final class RecipeCreationRules {
         if (isCookingSerializer(model.serializerId())) {
             fields.put("recipe.experience", model.properties().getOrDefault("experience", "0.0"));
             fields.put("recipe.cooking_time", model.properties().getOrDefault("cooking_time", "200"));
+        } else if ("jei:anvil".equals(model.serializerId())) {
+            fields.put("anvil.cost", model.properties().getOrDefault("anvil.cost", "1"));
         }
         return new RecipePatch(model.recipeId(), model.serializerId(), model.baseFingerprint(), fields);
     }
@@ -86,6 +90,23 @@ public final class RecipeCreationRules {
             throw new IllegalArgumentException("unsupported creation patch");
         }
         List<EditorSlot> slots = blankSlots(patch.serializerId());
+        for (int index = 0; index < slots.size(); index++) {
+            EditorSlot slot = slots.get(index);
+            if (!"input".equals(slot.role())) {
+                continue;
+            }
+            String itemId = patch.fields().get(slot.key() + ".item");
+            int inputCount = parseCount(patch.fields().get(slot.key() + ".count"));
+            if (itemId == null || inputCount < 1 || "minecraft:air".equals(itemId)) {
+                continue;
+            }
+            try {
+                slots.set(index, new EditorSlot(slot.key(), slot.role(),
+                        new EditorIngredient(itemId, inputCount)));
+            } catch (IllegalArgumentException ignored) {
+                // The platform adapter performs registry validation before use.
+            }
+        }
         String outputId = patch.fields().get("output.item");
         int count = parseCount(patch.fields().get("output.count"));
         if (outputId != null && count > 0 && !"minecraft:air".equals(outputId)) {
@@ -106,12 +127,19 @@ public final class RecipeCreationRules {
         if (patch.fields().containsKey("recipe.cooking_time")) {
             properties.put("cooking_time", patch.fields().get("recipe.cooking_time"));
         }
+        if (patch.fields().containsKey("anvil.cost")) {
+            properties.put("anvil.cost", patch.fields().get("anvil.cost"));
+        }
         return new EditorModel(patch.recipeId(), patch.serializerId(), patch.baseFingerprint(), slots, properties);
     }
 
     public static boolean isCreatableSerializer(String serializerId) {
         return "minecraft:crafting_shaped".equals(serializerId)
                 || "minecraft:crafting_shapeless".equals(serializerId)
+                || "minecraft:stonecutting".equals(serializerId)
+                || "minecraft:smithing_transform".equals(serializerId)
+                || "minecraft:smithing_trim".equals(serializerId)
+                || "jei:anvil".equals(serializerId)
                 || isCookingSerializer(serializerId);
     }
 
@@ -131,6 +159,16 @@ public final class RecipeCreationRules {
         List<EditorSlot> slots = new ArrayList<EditorSlot>();
         if (isCookingSerializer(serializerId)) {
             slots.add(new EditorSlot("input.0", "input", null));
+        } else if ("minecraft:stonecutting".equals(serializerId)) {
+            slots.add(new EditorSlot("input.0", "input", null));
+        } else if ("jei:anvil".equals(serializerId)) {
+            slots.add(new EditorSlot("input.0", "input", null));
+            slots.add(new EditorSlot("input.1", "input", null));
+        } else if ("minecraft:smithing_transform".equals(serializerId)
+                || "minecraft:smithing_trim".equals(serializerId)) {
+            for (int index = 0; index < 3; index++) {
+                slots.add(new EditorSlot("input." + index, "input", null));
+            }
         } else {
             for (int index = 0; index < 9; index++) {
                 slots.add(new EditorSlot("input." + index, "input", null));

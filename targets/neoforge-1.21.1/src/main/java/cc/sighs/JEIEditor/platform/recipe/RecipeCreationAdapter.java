@@ -41,8 +41,14 @@ public final class RecipeCreationAdapter {
         String recipeId = RecipeCreationRules.NAMESPACE + ":new_"
                 + UUID.randomUUID().toString().replace("-", "");
         List<EditorSlot> slots = new ArrayList<EditorSlot>();
-        if (RecipeCreationRules.isCookingSerializer(serializerId.toString())) {
+        if (RecipeCreationRules.isCookingSerializer(serializerId.toString())
+                || "minecraft:stonecutting".equals(serializerId.toString())) {
             slots.add(new EditorSlot("input.0", "input", null));
+        } else if ("minecraft:smithing_transform".equals(serializerId.toString())
+                || "minecraft:smithing_trim".equals(serializerId.toString())) {
+            for (int index = 0; index < 3; index++) {
+                slots.add(new EditorSlot("input." + index, "input", null));
+            }
         } else {
             for (int index = 0; index < 9; index++) {
                 slots.add(new EditorSlot("input." + index, "input", null));

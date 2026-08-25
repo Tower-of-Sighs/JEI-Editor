@@ -11,12 +11,17 @@ import cc.sighs.JEIEditor.server.RecipeEditorPolicy;
 import cc.sighs.JEIEditor.server.RecipeEditsApplier;
 import cc.sighs.JEIEditor.server.RecipeEditsSavedData;
 import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.crafting.RecipeHolder;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 import net.neoforged.neoforge.network.PacketDistributor;
@@ -28,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+@EventBusSubscriber(modid = JEIEditorNeoForge121.MOD_ID)
 public final class NeoForge121Network {
     private static final Logger LOGGER = LoggerFactory.getLogger("JEI Editor Network");
 
@@ -39,7 +45,9 @@ public final class NeoForge121Network {
                 .playToServer(RecipeEditPayload.TYPE, RecipeEditPayload.STREAM_CODEC, NeoForge121Network::handleRecipeEdit)
                 .playToServer(RecipeReloadPayload.TYPE, RecipeReloadPayload.STREAM_CODEC, NeoForge121Network::handleRecipeReload)
                 .playToServer(RecipeEditDeletePayload.TYPE, RecipeEditDeletePayload.STREAM_CODEC, NeoForge121Network::handleRecipeDelete)
-                .playToClient(RecipeEditResultPayload.TYPE, RecipeEditResultPayload.STREAM_CODEC, NeoForge121Network::handleRecipeResult);
+                .playToClient(RecipeEditResultPayload.TYPE, RecipeEditResultPayload.STREAM_CODEC, NeoForge121Network::handleRecipeResult)
+                .playToClient(SavedRecipeSyncPayload.TYPE, SavedRecipeSyncPayload.STREAM_CODEC,
+                        NeoForge121Network::handleSavedRecipeSync);
     }
 
     public static void send(List<RecipePatch> patches) {
@@ -54,6 +62,23 @@ public final class NeoForge121Network {
         PacketDistributor.sendToServer(new RecipeEditDeletePayload(recipeId));
     }
 
+    @SubscribeEvent
+    public static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof ServerPlayer player) {
+            sendSavedRecipes(player);
+        }
+    }
+
+    private static void sendSavedRecipes(ServerPlayer player) {
+        MinecraftServer server = player.getServer();
+        if (server == null) {
+            return;
+        }
+        RecipeEditsApplier.pruneMissingSavedArtifacts(server);
+        PacketDistributor.sendToPlayer(player, SavedRecipeSyncPayload.fromPatches(
+                new ArrayList<RecipePatch>(RecipeEditsSavedData.get(server).patches().values())));
+    }
+
     private static void handleRecipeReload(RecipeReloadPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> {
             if (context.player() == null) {
@@ -65,6 +90,7 @@ public final class NeoForge121Network {
                 context.reply(RecipeEditResultPayload.failure("Unknown server", ""));
                 return;
             }
+            RecipeEditsApplier.pruneMissingSavedArtifacts(server);
             List<RecipePatch> patches = new ArrayList<RecipePatch>(RecipeEditsSavedData.get(server).patches().values());
             for (RecipePatch patch : patches) {
                 String policyId = FuelRecipeEditorAdapter.itemId(patch)
@@ -76,6 +102,11 @@ public final class NeoForge121Network {
                 }
             }
             if (patches.isEmpty()) {
+                if (context.player() instanceof ServerPlayer player) {
+                    // An empty sync is meaningful: it clears client-side
+                    // synthetic pages after their datapack files were removed.
+                    sendSavedRecipes(player);
+                }
                 context.reply(RecipeEditResultPayload.failure("No saved recipe edits", ""));
                 return;
             }
@@ -91,6 +122,12 @@ public final class NeoForge121Network {
                                          List<RecipePatch> patches, int index) {
         if (index >= patches.size()) {
             RecipeEditCoordinator.finish(server);
+            if (context.player() instanceof ServerPlayer player) {
+                // Also refresh the client snapshot for reloads issued after a
+                // reconnect, when the client may not have the SavedData patch
+                // that was written by an earlier session.
+                sendSavedRecipes(player);
+            }
             context.reply(RecipeEditResultPayload.success(
                     "Reloaded " + patches.size() + " saved recipe edits", ""));
             return;
@@ -214,6 +251,14 @@ public final class NeoForge121Network {
             return RecipeEditsApplier.canApply(server, patch)
                     ? null : "New recipe is invalid or unsupported";
         }
+        if (JeiVanillaRecipeEditorAdapter.isSyntheticPatch(patch)) {
+            if ("jei:anvil".equals(patch.serializerId())
+                    && !RecipeEditsApplier.canApply(server, patch)) {
+                return "Existing JEI anvil recipes cannot be edited; create a new recipe instead";
+            }
+            return RecipeEditsApplier.canApply(server, patch)
+                    ? null : "JEI generated recipe patch is invalid";
+        }
         RecipeHolder<?> holder = server.getRecipeManager().byKey(recipeId).orElse(null);
         if (holder == null) {
             return "Recipe does not exist";
@@ -248,7 +293,7 @@ public final class NeoForge121Network {
                         "Recipe save failed; change was not accepted", patch.recipeId()));
                 return;
             }
-            if (beforeModel != null) {
+            if (beforeModel != null || JeiVanillaRecipeEditorAdapter.isSyntheticPatch(patch)) {
                 data.put(patch, beforeModel);
                 data.audit(context.player().getName().getString(),
                         RecipePatchSemantics.isDeletion(patch) ? "DELETE"
@@ -262,6 +307,10 @@ public final class NeoForge121Network {
 
     private static void handleRecipeResult(RecipeEditResultPayload payload, IPayloadContext context) {
         context.enqueueWork(() -> ClientEditorState.applyResult(payload.success, payload.message, payload.recipeId));
+    }
+
+    private static void handleSavedRecipeSync(SavedRecipeSyncPayload payload, IPayloadContext context) {
+        context.enqueueWork(() -> ClientEditorState.applySavedPatches(payload.patches));
     }
 
     static final class RecipeEditPayload implements CustomPacketPayload {
@@ -302,7 +351,7 @@ public final class NeoForge121Network {
                 for (Map.Entry<String, String> entry : patch.fields().entrySet()) {
                     RecipeEditPayloadRules.requireField(entry.getKey(), entry.getValue());
                     buffer.writeUtf(entry.getKey(), 64);
-                    buffer.writeUtf(entry.getValue(), 512);
+                    buffer.writeUtf(entry.getValue(), RecipeEditPayloadRules.MAX_FIELD_VALUE_LENGTH);
                 }
             }
         }
@@ -320,7 +369,7 @@ public final class NeoForge121Network {
                 Map<String, String> fields = new LinkedHashMap<String, String>();
                 for (int fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++) {
                     String key = buffer.readUtf(64);
-                    String value = buffer.readUtf(512);
+                    String value = buffer.readUtf(RecipeEditPayloadRules.MAX_FIELD_VALUE_LENGTH);
                     RecipeEditPayloadRules.requireField(key, value);
                     fields.put(key, value);
                 }
@@ -405,6 +454,70 @@ public final class NeoForge121Network {
 
         private static RecipeEditResultPayload read(RegistryFriendlyByteBuf buffer) {
             return new RecipeEditResultPayload(buffer.readBoolean(), buffer.readUtf(256), buffer.readUtf(256));
+        }
+    }
+
+    /** Initial server-to-client snapshot used to restore generated JEI pages
+     * after reconnecting or opening a world with existing SavedData. */
+    static final class SavedRecipeSyncPayload implements CustomPacketPayload {
+        static final Type<SavedRecipeSyncPayload> TYPE = new Type<SavedRecipeSyncPayload>(
+                ResourceLocation.fromNamespaceAndPath(JEIEditorNeoForge121.MOD_ID, "sync_saved_recipes"));
+        static final StreamCodec<RegistryFriendlyByteBuf, SavedRecipeSyncPayload> STREAM_CODEC =
+                StreamCodec.of(SavedRecipeSyncPayload::write, SavedRecipeSyncPayload::read);
+
+        private final List<RecipePatch> patches;
+
+        private SavedRecipeSyncPayload(List<RecipePatch> patches) {
+            this.patches = new ArrayList<RecipePatch>(patches);
+        }
+
+        static SavedRecipeSyncPayload fromPatches(List<RecipePatch> patches) {
+            return new SavedRecipeSyncPayload(patches == null
+                    ? java.util.Collections.<RecipePatch>emptyList() : patches);
+        }
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+
+        private static void write(RegistryFriendlyByteBuf buffer, SavedRecipeSyncPayload payload) {
+            RecipeEditPayloadRules.requirePatchCount(payload.patches.size());
+            buffer.writeVarInt(payload.patches.size());
+            for (RecipePatch patch : payload.patches) {
+                buffer.writeUtf(patch.recipeId(), 256);
+                buffer.writeUtf(patch.serializerId(), 256);
+                buffer.writeUtf(patch.baseFingerprint(), 128);
+                RecipeEditPayloadRules.requireFieldCount(patch.fields().size());
+                buffer.writeVarInt(patch.fields().size());
+                for (Map.Entry<String, String> entry : patch.fields().entrySet()) {
+                    RecipeEditPayloadRules.requireField(entry.getKey(), entry.getValue());
+                    buffer.writeUtf(entry.getKey(), 64);
+                    buffer.writeUtf(entry.getValue(), RecipeEditPayloadRules.MAX_FIELD_VALUE_LENGTH);
+                }
+            }
+        }
+
+        private static SavedRecipeSyncPayload read(RegistryFriendlyByteBuf buffer) {
+            int patchCount = buffer.readVarInt();
+            RecipeEditPayloadRules.requirePatchCount(patchCount);
+            List<RecipePatch> patches = new ArrayList<RecipePatch>(patchCount);
+            for (int patchIndex = 0; patchIndex < patchCount; patchIndex++) {
+                String recipeId = buffer.readUtf(256);
+                String serializerId = buffer.readUtf(256);
+                String baseFingerprint = buffer.readUtf(128);
+                int fieldCount = buffer.readVarInt();
+                RecipeEditPayloadRules.requireFieldCount(fieldCount);
+                Map<String, String> fields = new LinkedHashMap<String, String>();
+                for (int fieldIndex = 0; fieldIndex < fieldCount; fieldIndex++) {
+                    String key = buffer.readUtf(64);
+                    String value = buffer.readUtf(RecipeEditPayloadRules.MAX_FIELD_VALUE_LENGTH);
+                    RecipeEditPayloadRules.requireField(key, value);
+                    fields.put(key, value);
+                }
+                patches.add(new RecipePatch(recipeId, serializerId, baseFingerprint, fields));
+            }
+            return new SavedRecipeSyncPayload(patches);
         }
     }
 }
