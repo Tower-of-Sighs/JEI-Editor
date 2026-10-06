@@ -13,6 +13,7 @@ import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.RecipesUpdatedEvent;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.ScreenEvent;
 
 import java.util.ArrayList;
@@ -305,6 +306,14 @@ public final class ClientEditorEvents {
         if (ClientEditorState.isEditing()) {
             ClientEditorState.setLastDrop("Recipes synchronized from server");
         }
+    }
+
+    @SubscribeEvent
+    public static void onClientTick(ClientTickEvent.Post event) {
+        // Runtime recipe registration must happen after JEI has consumed the
+        // RecipesUpdatedEvent; doing it from the event callback is overwritten
+        // by JEI's own lookup rebuild.
+        JeiRecipeEditorPlugin.tickCreatedAnvilRestore();
     }
 
     @SubscribeEvent

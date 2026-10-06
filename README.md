@@ -64,3 +64,5 @@ cd targets\neoforge-1.21.1
 ## 版本参考
 
 - [NeoForge 1.21.1 版本参考](docs/version-differences/README.md)
+- [1.21.1 NeoForge JEI 附属清单](docs/JEI_ADDONS_1.21.1_NEOFORGE.md)
+- [需要内容模组的 JEI 附属：安装说明](docs/JEI_ADDONS_CONTENT_MODS.md)

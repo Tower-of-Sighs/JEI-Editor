@@ -10,6 +10,7 @@ import mezz.jei.api.ingredients.ITypedIngredient;
 import mezz.jei.api.constants.RecipeTypes;
 import mezz.jei.api.recipe.category.IRecipeCategory;
 import mezz.jei.api.recipe.IRecipeManager;
+import mezz.jei.api.recipe.IFocusGroup;
 import mezz.jei.api.runtime.IJeiRuntime;
 import mezz.jei.common.Internal;
 import mezz.jei.common.util.ImmutableRect2i;
@@ -362,8 +363,21 @@ public final class JeiRecipeIntrospection {
             Object focused = focusedMethod.invoke(state);
             if (focused != null) {
                 Field recipesField = findNamedField(focused.getClass(), "recipes", List.class);
-                if (recipesField != null) {
+                if (recipesField != null && !Modifier.isFinal(recipesField.getModifiers())) {
                     recipesField.set(focused, null);
+                } else {
+                    // StaticFocusedRecipes owns an immutable snapshot. Replace
+                    // that state through JEI's own lookup API so the next open
+                    // is not permanently tied to the pre-reload list.
+                    Method focusesMethod = state.getClass().getMethod("getFocuses");
+                    focusesMethod.setAccessible(true);
+                    Object focuses = focusesMethod.invoke(state);
+                    IRecipeCategory<?> selected = logic.getSelectedRecipeCategory();
+                    if (focuses instanceof IFocusGroup
+                            && logic.showFocus((IFocusGroup) focuses)) {
+                        logic.setRecipeCategory(selected);
+                        return;
+                    }
                 }
             }
             Field layoutsField = findNamedField(logic.getClass(),

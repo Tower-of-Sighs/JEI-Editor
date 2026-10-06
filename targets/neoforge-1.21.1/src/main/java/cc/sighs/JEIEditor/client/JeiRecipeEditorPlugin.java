@@ -44,10 +44,12 @@ import java.util.Map;
 
 @JeiPlugin
 public final class JeiRecipeEditorPlugin implements IModPlugin {
+    private static final int CREATED_ANVIL_VISIBILITY_CHECK_TICKS = 3;
     private static final Map<String, Integer> fuelPreviewTimes = new HashMap<String, Integer>();
     private static final Map<String, RecipePatch> createdAnvilPatches =
             new HashMap<String, RecipePatch>();
-    private static boolean createdAnvilRestoreScheduled;
+    private static boolean createdAnvilRestorePending;
+    private static int createdAnvilVisibilityChecksRemaining;
     @Override
     public ResourceLocation getPluginUid() {
         return ResourceLocation.fromNamespaceAndPath(JEIEditorNeoForge121.MOD_ID, "jei_plugin");
@@ -723,14 +725,29 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
      * otherwise be overwritten by JEI a moment later.
      */
     static void scheduleCreatedAnvilRestore() {
-        if (createdAnvilRestoreScheduled) {
+        createdAnvilRestorePending = true;
+    }
+
+    /** Runs after JEI has finished handling the recipe-update event. */
+    static void tickCreatedAnvilRestore() {
+        if (Minecraft.getInstance().level == null
+                || !Internal.getOptionalJeiRuntime().isPresent()) {
             return;
         }
-        createdAnvilRestoreScheduled = true;
-        Minecraft.getInstance().execute(() -> {
-            createdAnvilRestoreScheduled = false;
+        if (createdAnvilRestorePending) {
+            createdAnvilRestorePending = false;
             restoreCreatedAnvilRecipes();
-        });
+            createdAnvilVisibilityChecksRemaining = CREATED_ANVIL_VISIBILITY_CHECK_TICKS;
+            return;
+        }
+        if (createdAnvilVisibilityChecksRemaining <= 0) {
+            return;
+        }
+        createdAnvilVisibilityChecksRemaining--;
+        mezz.jei.api.runtime.IJeiRuntime runtime = Internal.getOptionalJeiRuntime().get();
+        if (!createdAnvilRecipesVisible(runtime)) {
+            restoreCreatedAnvilRecipes();
+        }
     }
 
     /** Reapplies the client-side JEI entries after JEI rebuilds its recipe list. */
@@ -750,18 +767,80 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         if (recipes.isEmpty()) {
             return;
         }
-        List<IJeiAnvilRecipe> existing = runtime.get().getRecipeManager()
-                .createRecipeLookup(RecipeTypes.ANVIL).includeHidden().get()
-                .filter(recipe -> recipes.stream().anyMatch(value ->
-                        value.getUid().equals(recipe.getUid())))
+        boolean changed = false;
+        for (IJeiAnvilRecipe desired : recipes) {
+            List<IJeiAnvilRecipe> existing = runtime.get().getRecipeManager()
+                    .createRecipeLookup(RecipeTypes.ANVIL).includeHidden().get()
+                    .filter(recipe -> desired.getUid().equals(recipe.getUid()))
+                    .collect(java.util.stream.Collectors.toList());
+            IJeiAnvilRecipe matching = existing.stream()
+                    .filter(recipe -> sameAnvilRecipe(desired, recipe)).findFirst().orElse(null);
+            if (matching != null) {
+                // A previous restore may have hidden this exact object. Make
+                // it visible again instead of appending duplicate recipes.
+                runtime.get().getRecipeManager().unhideRecipes(RecipeTypes.ANVIL,
+                        java.util.Collections.singletonList(matching));
+                List<IJeiAnvilRecipe> stale = existing.stream()
+                        .filter(value -> value != matching).collect(java.util.stream.Collectors.toList());
+                if (!stale.isEmpty()) {
+                    runtime.get().getRecipeManager().hideRecipes(RecipeTypes.ANVIL, stale);
+                }
+            } else {
+                if (!existing.isEmpty()) {
+                    runtime.get().getRecipeManager().hideRecipes(RecipeTypes.ANVIL, existing);
+                }
+                runtime.get().getRecipeManager().addRecipes(RecipeTypes.ANVIL,
+                        java.util.Collections.singletonList(desired));
+            }
+            changed = true;
+        }
+        // RecipesGui is a long-lived JEI singleton. Reload intentionally
+        // closes it, but its focused recipe lookup remains cached while the
+        // screen is closed. Invalidate JEI's runtime-owned instance so the
+        // next open sees newly registered synthetic recipes immediately.
+        if (changed && runtime.get().getRecipesGui() instanceof RecipesGui) {
+            JeiRecipeIntrospection.refreshRecipeLookup(
+                    (RecipesGui) runtime.get().getRecipesGui());
+        }
+    }
+
+    private static boolean createdAnvilRecipesVisible(mezz.jei.api.runtime.IJeiRuntime runtime) {
+        if (createdAnvilPatches.isEmpty()) {
+            return true;
+        }
+        List<IJeiAnvilRecipe> visible = runtime.getRecipeManager()
+                .createRecipeLookup(RecipeTypes.ANVIL).get()
                 .collect(java.util.stream.Collectors.toList());
-        if (!existing.isEmpty()) {
-            runtime.get().getRecipeManager().hideRecipes(RecipeTypes.ANVIL, existing);
+        for (RecipePatch patch : createdAnvilPatches.values()) {
+            Optional<IJeiAnvilRecipe> desired = createdAnvilRecipe(patch);
+            if (desired.isPresent() && visible.stream()
+                    .noneMatch(recipe -> sameAnvilRecipe(desired.get(), recipe))) {
+                return false;
+            }
         }
-        runtime.get().getRecipeManager().addRecipes(RecipeTypes.ANVIL, recipes);
-        if (Minecraft.getInstance().screen instanceof RecipesGui) {
-            JeiRecipeIntrospection.refreshRecipeLookup((RecipesGui) Minecraft.getInstance().screen);
+        return true;
+    }
+
+    private static boolean sameAnvilRecipe(IJeiAnvilRecipe left, IJeiAnvilRecipe right) {
+        return left.getUid().equals(right.getUid())
+                && sameStacks(left.getLeftInputs(), right.getLeftInputs())
+                && sameStacks(left.getRightInputs(), right.getRightInputs())
+                && sameStacks(left.getOutputs(), right.getOutputs());
+    }
+
+    private static boolean sameStacks(List<ItemStack> left, List<ItemStack> right) {
+        if (left.size() != right.size()) {
+            return false;
         }
+        for (int index = 0; index < left.size(); index++) {
+            ItemStack leftStack = left.get(index);
+            ItemStack rightStack = right.get(index);
+            if (leftStack.getCount() != rightStack.getCount()
+                    || !ItemStack.isSameItemSameComponents(leftStack, rightStack)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private static void hideCreatedAnvilRecipes(Set<ResourceLocation> uids) {
