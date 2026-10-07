@@ -7,7 +7,8 @@
 - 目标环境：Minecraft 1.21.1 / NeoForge 21.1.238 / JEI 19.44.0.403
 - 判定标准：jar 实现了 JEI 的 `mezz.jei.api.IModPlugin` 接口，即确实向 JEI 注册内容
 - 入选条件：除 JEI 外不依赖其他内容模组
-- 安装数量：38
+- 安装数量：38（其中 6 个因与编辑器争抢 JEI 可见性状态而**已禁用**，见
+  [DISABLED_JEI_ADDONS.md](DISABLED_JEI_ADDONS.md)）
 
 `run/` 已被 `.gitignore` 忽略，这些 jar 属于本机运行环境，不进入版本库。
 

@@ -5,7 +5,10 @@
 
 - 目标环境：Minecraft 1.21.1 / NeoForge 21.1.238 / JEI 19.44.0.403
 - 验证方式：开发客户端实际启动，进入主菜单，日志无 mod 加载错误与 mod 冲突
-- `run/mods/` 当前共 **76** 个 jar：第一批 38 个 + 本批新增 38 个（15 个附属 + 23 个前置）
+- 本批共装入 38 个 jar（15 个附属 + 23 个前置）；其中 `kubejs-jei-info-removal`
+  与前置 `kubejs` 因与编辑器争抢 JEI 可见性状态而**已禁用**，
+  见 [DISABLED_JEI_ADDONS.md](DISABLED_JEI_ADDONS.md)
+- `run/mods/` 当前共 **76** 个 jar（含 8 个已禁用）：第一批 38 个 + 本批 38 个
 - `run/` 已被 `.gitignore` 忽略，不进入版本库
 
 ## 结论速览
