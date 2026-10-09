@@ -5,7 +5,9 @@ import cc.sighs.JEIEditor.editor.RecipeEditSession;
 import cc.sighs.JEIEditor.editor.EditorModel;
 import cc.sighs.JEIEditor.editor.EditorIngredient;
 import cc.sighs.JEIEditor.editor.EditorSlot;
+import cc.sighs.JEIEditor.editor.IngredientKind;
 import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
+import cc.sighs.JEIEditor.editor.SlotPatchFields;
 import cc.sighs.JEIEditor.platform.fuel.FuelOverrideState;
 import cc.sighs.JEIEditor.platform.recipe.CookingRecipeEditorAdapter;
 import cc.sighs.JEIEditor.platform.recipe.CraftingSlotMapper;
@@ -13,9 +15,11 @@ import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
 import cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeCreationAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
+import cc.sighs.JEIEditor.recipe.RecipeFieldMapping;
 import mezz.jei.api.gui.ingredient.IRecipeSlotDrawable;
 import mezz.jei.api.gui.ingredient.IRecipeSlotView;
 import mezz.jei.api.gui.ingredient.IRecipeSlotsView;
+import mezz.jei.api.ingredients.ITypedIngredient;
 import mezz.jei.api.recipe.RecipeIngredientRole;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.client.gui.GuiGraphics;
@@ -351,8 +355,7 @@ public final class ClientEditorState {
                     && view.getRole() != RecipeIngredientRole.OUTPUT) {
                 continue;
             }
-            if (slotKey == null || (!patch.fields().containsKey(slotKey + ".item")
-                    && !patch.fields().containsKey(slotKey + ".count"))) {
+            if (slotKey == null || !SlotPatchFields.touches(patch.fields(), slotKey)) {
                 // Leave untouched slots under JEI's own display pipeline. An
                 // empty override would hide their original ingredient.
                 continue;
@@ -370,20 +373,51 @@ public final class ClientEditorState {
                 }
                 continue;
             }
-            EditorIngredient ingredient = patchedIngredient(model, slotKey, patch);
-            if (ingredient != null) {
-                ResourceLocation id = ResourceLocation.tryParse(ingredient.itemId());
-                if (id != null && BuiltInRegistries.ITEM.containsKey(id)) {
-                    drawable.createDisplayOverrides().addItemStack(new ItemStack(
-                            BuiltInRegistries.ITEM.get(id), ingredient.count()));
-                }
-            } else {
+            EditorIngredient ingredient = SlotPatchFields.patched(patch.fields(), slotKey,
+                    originalIngredient(model, slotKey));
+            if (ingredient == null || !addPreview(drawable, ingredient)) {
                 // An empty override is different from no override: without it
                 // JEI falls back to the recipe's original ingredient and the
                 // item remains visible until the server reloads the recipe.
                 drawable.createDisplayOverrides();
             }
         }
+    }
+
+    /**
+     * Shows an edited ingredient in a slot, in its own kind: an item stack, a
+     * platform fluid stack, or the registered JEI ingredient whose resource id the
+     * patch names (a Mekanism chemical, which the editor targets without compiling
+     * against it). False when nothing can be shown, so the caller can fall back to
+     * an empty override.
+     */
+    private static boolean addPreview(IRecipeSlotDrawable drawable, EditorIngredient ingredient) {
+        if (ingredient.isItem()) {
+            ResourceLocation id = ResourceLocation.tryParse(ingredient.id());
+            if (id == null || !BuiltInRegistries.ITEM.containsKey(id)) {
+                return false;
+            }
+            drawable.createDisplayOverrides().addItemStack(
+                    new ItemStack(BuiltInRegistries.ITEM.get(id), ingredient.amount()));
+            return true;
+        }
+        if (ingredient.kind() == IngredientKind.FLUID) {
+            ResourceLocation id = ResourceLocation.tryParse(ingredient.id());
+            if (id == null || !BuiltInRegistries.FLUID.containsKey(id)) {
+                return false;
+            }
+            drawable.createDisplayOverrides().addFluidStack(
+                    BuiltInRegistries.FLUID.get(id), ingredient.amount());
+            return true;
+        }
+        Optional<ITypedIngredient<?>> typed = cc.sighs.JEIEditor.platform.recipe.RecipeAdapterSupport
+                .typedIngredient(cc.sighs.JEIEditor.platform.recipe.RecipeAdapterSupport
+                        .CHEMICAL_TYPE_UID, ingredient.id());
+        if (!typed.isPresent()) {
+            return false;
+        }
+        drawable.createDisplayOverrides().addTypedIngredient(typed.get());
+        return true;
     }
 
     static void clearPreview() {
@@ -413,35 +447,13 @@ public final class ClientEditorState {
         }
     }
 
-    private static EditorIngredient patchedIngredient(EditorModel model, String slotKey, RecipePatch patch) {
+    /** The model's own ingredient of one slot, or null when it holds none. */
+    private static EditorIngredient originalIngredient(EditorModel model, String slotKey) {
         EditorSlot originalSlot = model.slots().stream()
                 .filter(slot -> slot.key().equals(slotKey))
                 .findFirst()
                 .orElse(null);
-        EditorIngredient original = originalSlot == null ? null : originalSlot.ingredient();
-        String item = patch.fields().get(slotKey + ".item");
-        String count = patch.fields().get(slotKey + ".count");
-        if ("minecraft:air".equals(item) || "0".equals(count)) {
-            return null;
-        }
-        if (original == null && item == null) {
-            return null;
-        }
-        if (original == null && count == null) {
-            return null;
-        }
-        String itemId = item == null ? original.itemId() : item;
-        int amount;
-        try {
-            amount = count == null ? original.count() : Integer.parseInt(count);
-        } catch (NumberFormatException exception) {
-            return null;
-        }
-        try {
-            return new EditorIngredient(itemId, amount);
-        } catch (IllegalArgumentException exception) {
-            return null;
-        }
+        return originalSlot == null ? null : originalSlot.ingredient();
     }
 
     static EditorModel getLastModel() {
@@ -452,17 +464,44 @@ public final class ClientEditorState {
         return lastSlotKey;
     }
 
-    static RecipePatch adjustOutputCount(int delta) {
-        if (lastModel == null) {
+    /**
+     * Whether the editor can resize that output slot. A slot whose item JEI
+     * cannot express as a simple stack (a component-carrying result, for example)
+     * is shown empty and cannot be rewritten, exactly like the empty output of a
+     * JEI-generated page.
+     */
+    static boolean canResizeOutput(String slotKey) {
+        if (lastModel == null || RecipeFieldMapping.outputIndex(slotKey) < 0) {
+            return false;
+        }
+        for (EditorSlot slot : lastModel.slots()) {
+            if (slotKey.equals(slot.key()) && "output".equals(slot.role())) {
+                return slot.ingredient() != null;
+            }
+        }
+        return false;
+    }
+
+    static RecipePatch adjustOutputCount(String slotKey, int delta) {
+        if (!canResizeOutput(slotKey)) {
             return null;
         }
-        int current = lastModel.slots().stream()
-                .filter(slot -> "output".equals(slot.role()) && slot.ingredient() != null)
-                .map(slot -> slot.ingredient().count())
-                .findFirst()
-                .orElse(0);
+        EditorIngredient ingredient = null;
+        for (EditorSlot slot : lastModel.slots()) {
+            if (slotKey.equals(slot.key()) && slot.ingredient() != null) {
+                ingredient = slot.ingredient();
+                break;
+            }
+        }
+        if (ingredient == null) {
+            return null;
+        }
+        // The amount field and its range belong to the slot's kind: a fluid or
+        // chemical output is scrolled in millibuckets, not in stack sizes.
+        String amountField = ingredient.kind().amountField();
+        int current = ingredient.amount();
         if (session.pending() != null && session.pending().recipeId().equals(lastModel.recipeId())) {
-            String value = session.pending().fields().get("output.count");
+            String value = session.pending().fields().get(slotKey + "." + amountField);
             if (value != null) {
                 try {
                     current = Integer.parseInt(value);
@@ -472,10 +511,23 @@ public final class ClientEditorState {
             }
         }
         int next = current + delta;
-        if (next < 1 || next > 64) {
+        if (!ingredient.kind().acceptsAmount(next)) {
             return null;
         }
-        return RecipeEditorAdapters.setOutputCount(lastModel, next);
+        return RecipeEditorAdapters.setOutputCount(lastModel, slotKey, next);
+    }
+
+    /** The amount range of an output slot's kind, for the refusal message. */
+    static IngredientKind lastOutputKind() {
+        if (lastModel == null) {
+            return null;
+        }
+        for (EditorSlot slot : lastModel.slots()) {
+            if ("output".equals(slot.role()) && slot.ingredient() != null) {
+                return slot.ingredient().kind();
+            }
+        }
+        return null;
     }
 
     static void setFuelBurnTime(EditorModel model, int burnTime) {

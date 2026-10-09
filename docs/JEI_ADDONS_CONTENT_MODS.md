@@ -153,18 +153,19 @@ datanessence --required-->  databank (Databank)
 
 ```powershell
 # 1. 解析依赖树（会下载附属与全部前置到 build/tmp/modsearch/jars/）
-python build\tmp\modsearch\resolve.py
+#    可复用脚本在 scripts/jei-mod-env/；下面两条补丁脚本是一次性历史步骤，只存在于被忽略的 build/tmp/modsearch/
+python scripts\jei-mod-env\resolve.py
 python build\tmp\modsearch\resolve_more.py
 python build\tmp\modsearch\resolve_more2.py
 
 # 2. 按当前 NeoForge / JEI 版本剔除装不上的，并装配到 run/mods
-python build\tmp\modsearch\prune.py
+python scripts\jei-mod-env\prune.py
 
 # 3. 递归校验依赖（能识别 jar-in-jar）
-python build\tmp\modsearch\verify.py
+python scripts\jei-mod-env\verify.py
 
 # 4. 实际启动验证（JDK 21；需要时脚本会按键越过冲突警告屏）
-powershell -NoProfile -ExecutionPolicy Bypass -File build\tmp\modsearch\run-client.ps1 -TimeoutSeconds 1500
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\jei-mod-env\run-client.ps1 -TimeoutSeconds 1500
 ```
 
 中间产物：`build/tmp/modsearch/`（`staged.json` 为全部候选元数据，`tree.json` 为依赖树，

@@ -59,6 +59,114 @@ cd targets\forge-1.20.1
 
 根项目的 `-PallTargets=true build` 只覆盖前三个 JDK 21 target，不能替代 NeoForge 26.1 的独立构建。
 
+### 验证入口与模组环境
+
+改动任何页面级功能前，先跑单一入口：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\jei-verify.ps1
+```
+
+它按顺序执行 `:common:test`、`scripts/jei-client-tests.ps1`、`scripts/jei-declared-smoke.ps1`，
+每个阶段打印一行摘要，任一阶段失败则非零退出（阶段日志在 `build/tmp/jei-verify/`）。
+该入口只覆盖单测与两个 harness；target 自身的 `./gradlew.bat build` 仍需单独跑。
+三个脚本都靠 JDK 21 启动 Gradle：优先 `-JdkPath`，其次 `JAVA_HOME`，最后默认 `D:\program\jdk-21`，
+都不存在时明确报错。
+
+两个 harness 需要 `targets/neoforge-1.21.1/run/mods/` 下的测试模组包（68 个启用 jar + 8 个禁用）。
+装配该包的工具已移入 `scripts/jei-mod-env/`，用法、可复用脚本与一次性历史步骤见该目录的
+`README.md`；`run/mods` 与 `build/tmp/modsearch/` 都不入库，因此新 clone 需要先按该 README 重建，
+该 README 同时列出 76 个文件的完整清单（68 启用 + 8 禁用）与逐步命令，并说明为什么
+`prune.py` 的 `report.json` 在入库文件里没有生产者（诚实缺口，不伪造）。
+排查 harness 失败前先确认包里模组齐全，不要把环境缺失误判成页面回归。
+
+服务端 smoke 的 RCON 传输在 `scripts/jei-rcon.ps1`：一次瞬时 socket 关闭或接收超时会在新连接上按
+指数退避重发，上限由 `-MaxAttempts` 决定（历史上曾有一次运行因此中止）。该重试路径由
+`scripts/jei-rcon-proof.ps1` 用一个假 RCON 服务端证明（断线、静默对端、关闭的端口、非传输错误四类），
+它不需要 Minecraft 服务端。
+
+### 客户端配方页测试（neoforge-1.21.1）
+
+`neoforge-1.21.1` 额外有一个开发专用的第二模组 `jeieditortests`（代码在 `targets/neoforge-1.21.1/src/clientTest/`，
+mod metadata 在 `src/clientTest/resources/META-INF/neoforge.mods.toml`）。它只由 `clientTest` run 加载
+（`RUN mods=[jeieditor, jeieditortests]`），`sourceSets.main` 与发布 jar 都不包含它。
+该模组会进入一个一次性世界，遍历 JEI 注册的全部配方页面，用编辑器自己的建模与打补丁路径断言：
+
+- 已接入清单里的每个页面至少有一个可建模配方；
+- 声明式页面的槽位键恰好是该声明的字段列表按本页槽位数展开的结果：输入为 `input.0 .. input.N-1`，
+  输出为 `output`（本页只有一个输出槽）或 `output.0 .. output.M-1`（多个输出槽）；字段列表里含 `%d` 的字段
+  是可重复字段（覆盖其后所有序号，且必须是最后一项），只为某页命名一部分槽位的声明会失败；
+  若声明带 `withConcatenatedOutputs`（有序段列表），输出列表按 JEI 类别的加槽顺序拼接：单段仅在配方携带时
+  贡献一个槽，重复段按数组长度展开，客户端只校验槽数边界（`RecipeFieldMapping.segmentCountFits`），
+  序数落在拼接之外时服务端拒绝整份补丁（`RecipeFieldMapping.expandSegments`）；
+  若声明由**配方推导的槽位序列**描述整页槽位（`DerivedSlotSequence`，Create 盆地页的实现在
+  `CreateBasinSlotSequence`），客户端没有配方 JSON，因此只校验该序列自己的槽数下界与它声明的种类，
+  并由测试模组用模组自己加载好的配方独立重算一遍：输入必须是「每个合并后的物品原料一个槽，随后每个流体原料
+  一个槽」（合并规则 = `ItemHelper.condenseIngredients` 的 `Ingredient.getItems()` 逐项相等），
+  物品带在流体带之前，槽数对不上就失败——这是客户端侧证明「页面画出的槽位与服务端的推导一致」的那条断言；
+- 嵌套原料字段（`withPreservedIngredientBase`）：`mekanism:painting` 的 `item_input` 在 160/176 份文件里是
+  `{"type":"neoforge:difference","base":…,"subtracted":…}`，写回只替换 `base`、保留 `type`/`count`/`subtracted`。
+  这个节点在页面上看不见（JEI 只显示 difference 的成员），所以测试模组自己从数据包资源管理器读出该配方的
+  JSON、重算 base 减 subtracted，要求模型里那个槽的原料确实是差集里的成员，并且声明把这个字段标成保留嵌套结构；
+  写出的节点本身由服务端冒烟测试断言；
+- 声明必须能为每个槽位键解析出配方 JSON 字段（`RecipeFieldMapping.field`；有序段列表的输出槽位由服务端按配方
+  JSON 解析，客户端不检查这条），展开规则由测试模组独立重算，不调用被测代码；声明的每个字段还带**原料种类**
+  （`withFieldKind` / `withFluidFields` / `withChemicalFields`，默认物品），模型槽位的种类必须与该字段声明的一致，
+  页面上该槽**真正显示的原料种类**也必须在该声明里（否则那个槽画得出来却永远拖不进去），
+  且声明为流体/化学品的槽位不能为空——这正是「流体页可选」的前提；
+  有序段列表的槽位按「任一段的种类」判定，因为哪一段落在该序数只有服务端读得到配方 JSON；
+  测试模组独立展开出的字段，其种类必须等于服务端 gate 用的 `ModdedRecipeAdapters.declaredKinds`
+  为该槽解析出的种类集合：两边把同一个槽解析成不同字段（即客户端看得见、服务端会拒）时失败，
+  这正是曾经那条「流体字段声明不全」的形态；`common` 里另有 `SlotPatchShapeContractTest`
+  按种类逐个校验客户端发出的补丁形状与服务端 `SlotPatchFields.acceptsProperty` 的接受/拒绝一致；
+- 声明默认按 serializer 作用域，`withPageUid` 可以把一条声明缩到单个 JEI 页面：一个 Minecraft recipe type
+  被模组注册成两个方向相反的页面时（`mekanism:rotary` 的 `condensentrating` 是化学品入 + 流体出、
+  `decondensentrating` 反过来，两页读同一份配方 JSON），按 serializer 的声明只能描述其中一页，
+  页面作用域声明用它自己的 uid 作键，客户端把该 uid 当补丁的 `serializer` 发出去，服务端按同一个键取回声明，
+  该 serializer 本身不再被声明（只报 serializer 的补丁会被 `stale or unsupported patch` 拒掉）；
+- 一个字段的**值形状**默认是对象（物品 `{"item"|"id",count}`，流体/化学品按 `ModdedJsonStyle`），
+  `ModdedJsonStyle.AMOUNT` 表示「字段值就是数量」的裸数字（IE 焦炉的 `"creosote": 250`）：
+  这种字段写回时不产生对象，声明还必须用 `withFixedFieldIds` 固定它的 id，否则拖入另一种同种类原料只会写数量、
+  被读回成字段名隐含的那一种；客户端建模时只接受该 id 的候选，写回时拒绝别的 id；
+- 写回路径：模型里每个**含原料**的输入槽与输出槽（包括多输出页的 `output.N`）必须能经
+  `RecipeEditorAdapters.replaceSlot` 生成带该原料、且键带该槽位自身前缀的补丁；槽位应有的键随种类走：
+  物品 `.item`/`.count`（旧有的形状不变），流体 `.fluid`/`.fluid_amount`，化学品 `.chemical`/`.chemical_amount`；
+  非物品槽位还要反向断言物品拖放被拒，物品槽位反向断言流体拖放被拒（`foreign_kind_refused`）；
+  槽位为空时按契约处理：声明页与 JEI 合成页的空产出槽（JEI 信息页、堆肥页、盔甲纹饰，以及
+  `mekanism:sawing` 这类按配方可选的第二输出槽）必须抛 `IllegalArgumentException` 拒绝，合成网格的空格子
+  必须能填进去，其余页面允许「填进去」或「干净拒绝」二选一（不接受别的 throwable，也不接受键不对的补丁）；
+  燃料条目（`neoforge:furnace_fuel`）的 `input.0` 是它的身份（生成的配方 id 里编码了这个物品），
+  物品替换同样必须拒绝，只有燃烧时间可编辑；
+- 清单里状态为 `gap` 的页面必须**一个模型都不产生**（一旦产生说明有人修好了该页，需更新清单；
+  与已声明页面共用 serializer 的页面由声明里的只读页面名单保持只读，例如 `immersiveengineering:arc_recycling`）；
+- 页面显示的配方可能不是管理器里那条配方的 id：`mekanism:smelting` 由 `MekanismRecipeType` 从 vanilla
+  `minecraft:smelting` 现造、并把每条 id 改写成 `<prefix>+原始路径`（`RecipeViewerUtils.synthetic`，前缀
+  `/mekanism_generated/`）。`RecipeViewerAliases` 记下这种页面的 id 规则（页面 uid → 前缀），编辑器与测试模组
+  都经 `JeiRecipeIntrospection.aliasedRecipeHolder` 按它还原出真实配方 id，再走那条配方自己的 serializer
+  建模与写回（补丁携带真实 id 与 `minecraft:smelting`），所以这一页的模型是 `recipe-holder` 路线而不是声明路线；
+- `minecraft:tag_recipes/{item,block,fluid}` 由脚本内的锁定列表按同样方式断言（JEI 直接推 `TagInfoRecipe`，
+  编辑器所有路径都不认；标签页显示的是标签成员列表而不是配方记录，没有可写的配方编辑，因此这是终态而不是缺口）；
+- 编辑器能建模但不在清单里的页面会被列出（说明匹配了没打算接入的页面），不算失败。
+
+vanilla 适配器只对**自己真正实现**的 serializer 建模与改写，按 serializer id 而不是配方类匹配：
+`CraftingRecipeEditorAdapter` 只认 `minecraft:crafting_shaped`/`crafting_shapeless`，
+`CookingRecipeEditorAdapter` 只认四个烹饪 serializer，`VanillaSpecialRecipeEditorAdapter` 只认
+`minecraft:stonecutting`/`smithing_transform`/`smithing_trim`；三者由
+`RecipeEditorAdapters.isImplementedVanillaSerializer` 合并，服务端写回（`RecipeEditsApplier`）也用它把门。
+模组自带的 serializer 即使配方类继承 vanilla 类也不会被建模：写回会用 vanilla 形状重建整份 JSON，
+而该模组的 codec 未必接受（`refinedstorage:recoloring` 要 `ingredient`/`dye`，重建出来的是
+`ingredients`/`result`）。要支持这类 serializer 必须写声明（`ModdedRecipeAdapters`），由声明按原 JSON 打补丁。
+删除配方不走这条重建路径，因此任何 serializer 都可以删除。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\jei-client-tests.ps1
+```
+
+脚本从 `docs/JEI_PAGE_COMPAT_TODO.md` 解析：状态 `done`/`declared` 的行进入已接入清单，`gap` 的行进入零模型断言
+（`build\client-test\wired-pages.txt` 只写已接入页面）。随后启动 `runClientTest`，等 `build\client-test\report.json`
+出现后结束客户端进程，再根据报告打印逐页表格（`gap` / `KNOWN UNSUPPORTED` / `NOT WIRED` 各有标注）。
+客户端内断言失败或 `gap`/锁定页面产生了模型时脚本退出码为 1；`docs/**` 的变更由人工维护，脚本只读它。
+
 ### 发布
 
 在对应 target 内运行 `publishMods` 可手动发布该 target 的 jar 到 CurseForge 和 Modrinth。根 `gradle.properties` 中配置非敏感项目 ID；token 只通过环境变量提供：

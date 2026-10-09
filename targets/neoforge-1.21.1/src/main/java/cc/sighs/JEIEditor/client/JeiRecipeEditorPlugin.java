@@ -2,15 +2,21 @@ package cc.sighs.JEIEditor.client;
 
 import cc.sighs.JEIEditor.editor.RecipePatch;
 import cc.sighs.JEIEditor.JEIEditorNeoForge121;
+import cc.sighs.JEIEditor.editor.EditorIngredient;
 import cc.sighs.JEIEditor.editor.EditorModel;
+import cc.sighs.JEIEditor.editor.IngredientKind;
 import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
+import cc.sighs.JEIEditor.editor.SlotPatchFields;
 import cc.sighs.JEIEditor.platform.fuel.FuelOverrideState;
 import cc.sighs.JEIEditor.platform.recipe.CraftingSlotMapper;
 import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
 import cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.ModdedRecipeModelSupport;
+import cc.sighs.JEIEditor.platform.recipe.RecipeAdapterSupport;
 import cc.sighs.JEIEditor.platform.recipe.RecipeCreationAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeDeletionAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
+import cc.sighs.JEIEditor.recipe.RecipeFieldMapping;
 import mezz.jei.api.IModPlugin;
 import mezz.jei.api.JeiPlugin;
 import mezz.jei.api.gui.handlers.IGhostIngredientHandler;
@@ -29,8 +35,10 @@ import mezz.jei.api.recipe.vanilla.IJeiAnvilRecipe;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.renderer.Rect2i;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.crafting.Recipe;
 import net.minecraft.world.item.crafting.RecipeHolder;
 
 import java.util.Collections;
@@ -93,14 +101,18 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         Optional<RecipeTarget> target = resolveTarget(gui, mouseX, mouseY);
         if (!target.isPresent() || FuelRecipeEditorAdapter.SERIALIZER.equals(target.get().model.serializerId())
                 || ClientEditorState.isRecipeDeleted(target.get().model.recipeId())
-                || !"output".equals(target.get().slotKey)) {
+                || RecipeFieldMapping.outputIndex(target.get().slotKey) < 0) {
             return false;
         }
         ClientEditorState.rememberTarget(target.get().model, target.get().slotKey, target.get().slots,
                 target.get().recipe);
-        RecipePatch patch = ClientEditorState.adjustOutputCount(scrollDelta > 0.0D ? 1 : -1);
+        RecipePatch patch = ClientEditorState.adjustOutputCount(target.get().slotKey,
+                scrollDelta > 0.0D ? 1 : -1);
         if (patch == null) {
-            ClientEditorState.setLastDrop("Output count must be between 1 and 64");
+            IngredientKind kind = ClientEditorState.lastOutputKind();
+            ClientEditorState.setLastDrop(ClientEditorState.canResizeOutput(target.get().slotKey) && kind != null
+                    ? "Output amount must be between " + kind.minAmount() + " and " + kind.maxAmount()
+                    : "This output slot holds no item the editor can rewrite");
         } else {
             ClientEditorState.setPendingPatch(patch);
             ClientEditorState.setLastDrop("Output count adjusted");
@@ -122,7 +134,8 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
             Object displayedRecipe = layout.getRecipeLayout().getRecipe();
             IRecipeCategory<?> category = layout.getRecipeLayout().getRecipeCategory();
-            Optional<EditorModel> sourceModel = resolveModel(displayedRecipe, category);
+            Optional<EditorModel> sourceModel = resolveModel(displayedRecipe, category,
+                    layout.getRecipeLayout().getRecipeSlotsView());
             EditorModel model = sourceModel.orElse(null);
             RecipePatch patch = findPendingPatch(displayedRecipe, category, patches);
             if (sourceModel.isPresent()) {
@@ -190,7 +203,8 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
             Object displayedRecipe = layout.getRecipeLayout().getRecipe();
             IRecipeCategory<?> category = layout.getRecipeLayout().getRecipeCategory();
-            Optional<EditorModel> sourceModel = resolveModel(displayedRecipe, category);
+            Optional<EditorModel> sourceModel = resolveModel(displayedRecipe, category,
+                    layout.getRecipeLayout().getRecipeSlotsView());
             EditorModel model = sourceModel.orElse(null);
             RecipePatch patch = findPendingPatch(displayedRecipe, category, patches);
             if (sourceModel.isPresent()) {
@@ -231,20 +245,22 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         if (original == null) {
             return false;
         }
-        cc.sighs.JEIEditor.editor.EditorIngredient ingredient = original.ingredient();
-        String item = patch.fields().get(slotKey + ".item");
-        String count = patch.fields().get(slotKey + ".count");
+        if (SlotPatchFields.kindOf(patch.fields(), slotKey) == null) {
+            return false;
+        }
+        EditorIngredient ingredient = original.ingredient();
+        String id = SlotPatchFields.id(patch.fields(), slotKey);
+        String amount = SlotPatchFields.amount(patch.fields(), slotKey);
+        boolean idChanged = id != null && (ingredient == null
+                ? !SlotPatchFields.CLEARED_ITEM.equals(id)
+                : !id.equals(ingredient.id()));
+        boolean amountChanged = amount != null && (ingredient == null
+                ? !SlotPatchFields.CLEARED_AMOUNT.equals(amount)
+                : !amount.equals(Integer.toString(ingredient.amount())));
         String stack = patch.fields().get(slotKey + ".stack");
-        boolean itemChanged = item != null && (ingredient == null
-                ? !"minecraft:air".equals(item)
-                : !item.equals(ingredient.itemId()));
-        boolean countChanged = count != null && (ingredient == null
-                ? !"0".equals(count)
-                : !count.equals(Integer.toString(ingredient.count())));
         boolean stackChanged = stack != null && !stack.equals(model.properties().get(
-                cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter
-                        .STACK_PROPERTY_PREFIX + slotKey));
-        return itemChanged || countChanged || stackChanged;
+                JeiVanillaRecipeEditorAdapter.STACK_PROPERTY_PREFIX + slotKey));
+        return idChanged || amountChanged || stackChanged;
     }
 
     private static boolean matchesRecipe(Object displayedRecipe, IRecipeCategory<?> category, String recipeId) {
@@ -265,7 +281,15 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             }
         }
         if (categoryId.isPresent()) {
-            return categoryId.get().toString().equals(recipeId);
+            if (categoryId.get().toString().equals(recipeId)) {
+                return true;
+            }
+            // A page that displays another recipe type's recipes under a rewritten
+            // id attaches its pending preview to the real recipe's id, which is the
+            // id its patches carry.
+            Optional<RecipeHolder<?>> aliased =
+                    JeiRecipeIntrospection.aliasedRecipeHolder(category, categoryId.get());
+            return aliased.isPresent() && aliased.get().id().toString().equals(recipeId);
         }
         if (displayedRecipe instanceof RecipeHolder<?>) {
             return ((RecipeHolder<?>) displayedRecipe).id().toString().equals(recipeId);
@@ -297,7 +321,8 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             }
             Object displayedRecipe = layout.getRecipeLayout().getRecipe();
             Optional<EditorModel> model = resolveModel(displayedRecipe,
-                    layout.getRecipeLayout().getRecipeCategory());
+                    layout.getRecipeLayout().getRecipeCategory(),
+                    layout.getRecipeLayout().getRecipeSlotsView());
             if (!model.isPresent()) {
                 continue;
             }
@@ -377,7 +402,8 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             }
             Object displayedRecipe = layout.getRecipeLayout().getRecipe();
             Optional<EditorModel> source = resolveModel(displayedRecipe,
-                    layout.getRecipeLayout().getRecipeCategory());
+                    layout.getRecipeLayout().getRecipeCategory(),
+                    layout.getRecipeLayout().getRecipeSlotsView());
             if (source.isPresent() && "jei:anvil".equals(source.get().serializerId())) {
                 Optional<EditorModel> creation = ClientEditorState.creationModelFor(
                         gui, source.get().recipeId());
@@ -405,7 +431,8 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
                 continue;
             }
             Optional<EditorModel> source = resolveModel(layout.getRecipeLayout().getRecipe(),
-                    layout.getRecipeLayout().getRecipeCategory());
+                    layout.getRecipeLayout().getRecipeCategory(),
+                    layout.getRecipeLayout().getRecipeSlotsView());
             Optional<EditorModel> creation = source.flatMap(value ->
                     creationModelForSource(gui, value));
             if (creation.isPresent()) {
@@ -424,7 +451,8 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         }
         for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
             Optional<EditorModel> source = resolveModel(layout.getRecipeLayout().getRecipe(),
-                    layout.getRecipeLayout().getRecipeCategory());
+                    layout.getRecipeLayout().getRecipeCategory(),
+                    layout.getRecipeLayout().getRecipeSlotsView());
             Optional<EditorModel> creation = source.flatMap(value ->
                     creationModelForSource(gui, value));
             if (creation.isPresent()) {
@@ -441,7 +469,11 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         return existing.isPresent() ? existing : RecipeCreationAdapter.createModel(source);
     }
 
-    private static Optional<EditorModel> resolveModel(Object displayedRecipe, IRecipeCategory<?> category) {
+    /** Builds the editor model of one displayed page. {@code slots} must be the
+     * slot views of the layout currently showing {@code displayedRecipe}; the
+     * declared mod pages are modelled from them directly. */
+    private static Optional<EditorModel> resolveModel(Object displayedRecipe, IRecipeCategory<?> category,
+                                                      IRecipeSlotsView slots) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.level == null) {
             ClientEditorState.setLastDrop("No client level available");
@@ -456,6 +488,22 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
                 minecraft.level.registryAccess());
         if (jeiModel.isPresent()) {
             return jeiModel;
+        }
+        // Declared mod recipe pages are modelled from the slot views of the
+        // displayed layout, so a declaration needs no per-mod reading code.
+        // The id comes from the category, or - for mods that push bare Recipe
+        // objects into JEI instead of RecipeHolder - from the recipe manager
+        // identity lookup.
+        Optional<ResourceLocation> moddedRecipeId = JeiRecipeIntrospection.recipeId(category, displayedRecipe);
+        if (!moddedRecipeId.isPresent()) {
+            moddedRecipeId = resolveRecipeHolder(displayedRecipe, category).map(RecipeHolder::id);
+        }
+        Optional<EditorModel> moddedModel = ModdedRecipeModelSupport.createModel(slots,
+                moddedRecipeId.isPresent() ? moddedRecipeId.get().toString() : null,
+                recipeSerializerId(displayedRecipe),
+                category == null ? null : category.getRecipeType().getUid());
+        if (moddedModel.isPresent()) {
+            return moddedModel;
         }
         if (category != null && !JeiRecipeIntrospection.isHandled(category, displayedRecipe)) {
             return Optional.empty();
@@ -473,17 +521,48 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
         return model;
     }
 
+    /** Serializer of the held recipe, or null when the page is not a recipe record. */
+    private static String recipeSerializerId(Object displayedRecipe) {
+        Recipe recipe = null;
+        if (displayedRecipe instanceof RecipeHolder<?>) {
+            recipe = ((RecipeHolder<?>) displayedRecipe).value();
+        } else if (displayedRecipe instanceof Recipe) {
+            // Some mods push the bare recipe object into JEI, not a holder.
+            recipe = (Recipe) displayedRecipe;
+        }
+        if (recipe == null) {
+            return null;
+        }
+        ResourceLocation serializerId = BuiltInRegistries.RECIPE_SERIALIZER.getKey(recipe.getSerializer());
+        return serializerId == null ? null : serializerId.toString();
+    }
+
     private static Optional<RecipeHolder<?>> resolveRecipeHolder(
             Object displayedRecipe, IRecipeCategory<?> category) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.level == null) {
             return Optional.empty();
         }
-        Optional<ResourceLocation> recipeId = JeiRecipeIntrospection.recipeId(category, displayedRecipe);
-        if (recipeId.isPresent()) {
-            Optional<RecipeHolder<?>> holder = minecraft.level.getRecipeManager().byKey(recipeId.get());
-            if (holder.isPresent()) {
-                return holder;
+        // The registry lookup is only trustworthy for a RecipeHolder, whose id is
+        // the recipe's own id. For every other displayed object the id comes from
+        // the category's registry name, which can be a tag id (JEI's tag pages) or
+        // a category-generated uid; looking that up would hand back a completely
+        // unrelated recipe, so those pages are resolved by identity below.
+        if (displayedRecipe instanceof RecipeHolder<?>) {
+            Optional<ResourceLocation> recipeId = JeiRecipeIntrospection.recipeId(category, displayedRecipe);
+            if (recipeId.isPresent()) {
+                Optional<RecipeHolder<?>> holder = minecraft.level.getRecipeManager().byKey(recipeId.get());
+                if (holder.isPresent()) {
+                    return holder;
+                }
+                // A page can display another recipe type's recipes under a rewritten
+                // id (Mekanism's smelting page). The manager holds the recipe under
+                // the original id, and that recipe is the one an edit writes.
+                Optional<RecipeHolder<?>> aliased =
+                        JeiRecipeIntrospection.aliasedRecipeHolder(category, recipeId.get());
+                if (aliased.isPresent()) {
+                    return aliased;
+                }
             }
         }
         return minecraft.level.getRecipeManager().getRecipes().stream()
@@ -493,13 +572,14 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
     }
 
     @SuppressWarnings("removal")
-    private static List<RecipeTarget> visibleEditableTargets(RecipesGui gui) {
+    private static List<RecipeTarget> visibleEditableTargets(RecipesGui gui, IngredientKind draggedKind) {
         List<RecipeTarget> targets = new ArrayList<RecipeTarget>();
         Set<String> seenAreas = new HashSet<String>();
         for (mezz.jei.gui.recipes.IRecipeLayoutWithButtons<?> layout : visibleRecipeLayouts(gui)) {
             Object displayedRecipe = layout.getRecipeLayout().getRecipe();
             IRecipeCategory<?> category = layout.getRecipeLayout().getRecipeCategory();
-            Optional<EditorModel> model = resolveModel(displayedRecipe, category);
+            Optional<EditorModel> model = resolveModel(displayedRecipe, category,
+                    layout.getRecipeLayout().getRecipeSlotsView());
             if (!model.isPresent()) {
                 continue;
             }
@@ -530,7 +610,7 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
                         (mezz.jei.api.gui.ingredient.IRecipeSlotDrawable) view;
                 String slotKey = RecipeGhostHandler.slotKey(slots.getSlotViews(), drawable, displayedRecipe,
                         editableModel);
-                if (slotKey != null && (slotKey.startsWith("input.") || "output".equals(slotKey))) {
+                if (isEditableSlotKey(slotKey) && acceptsKind(editableModel, slotKey, draggedKind)) {
                     Rect2i screenArea = JeiRecipeIntrospection.screenTargetArea(layout.getRecipeLayout(), drawable);
                     String areaKey = screenArea.getX() + ":" + screenArea.getY() + ":"
                             + screenArea.getWidth() + ":" + screenArea.getHeight();
@@ -541,6 +621,38 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             }
         }
         return targets;
+    }
+
+    /**
+     * Whether the drag of {@code kind} may be dropped on one slot.
+     *
+     * <p>A slot whose model ingredient says what kind it holds accepts exactly
+     * that kind, so a fluid is never offered an item field and vice versa. A slot
+     * the model could not read (an empty optional output, a result carrying a
+     * component patch) keeps the historical item behaviour: it is offered and the
+     * drop is refused with the reason, rather than silently not highlighting. A
+     * non-item drag is never offered such a slot, because nothing there is known
+     * to hold a fluid or a chemical.
+     */
+    private static boolean acceptsKind(EditorModel model, String slotKey, IngredientKind draggedKind) {
+        for (cc.sighs.JEIEditor.editor.EditorSlot slot : model.slots()) {
+            if (slotKey.equals(slot.key())) {
+                return slot.ingredient() == null
+                        ? draggedKind == IngredientKind.ITEM
+                        : slot.ingredient().kind() == draggedKind;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Slot keys the ghost drag can place into: every input, and any output -
+     * {@code output} on a single-output page, {@code output.0 .. output.M-1} on
+     * a page that draws several.
+     */
+    private static boolean isEditableSlotKey(String slotKey) {
+        return slotKey != null
+                && (slotKey.startsWith("input.") || RecipeFieldMapping.outputIndex(slotKey) >= 0);
     }
 
     private static boolean isExistingAnvil(EditorModel model) {
@@ -932,13 +1044,17 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
     private static final class RecipeGhostHandler implements IGhostIngredientHandler<RecipesGui> {
         @Override
         public <I> List<Target<I>> getTargetsTyped(RecipesGui gui, ITypedIngredient<I> ingredient, boolean doStart) {
-            Optional<ItemStack> stack = JeiRecipeIntrospection.itemStack(ingredient)
-                    .filter(value -> !value.isEmpty());
-            if (!doStart || !ClientEditorState.isEditing() || !stack.isPresent()) {
+            // The dragged ingredient is addressed by its kind, id and amount, so a
+            // fluid or a chemical becomes a target exactly like an item. A kind the
+            // editor cannot address at all (an information or energy ingredient)
+            // yields no targets instead of throwing.
+            cc.sighs.JEIEditor.editor.EditorIngredient dragged = RecipeAdapterSupport
+                    .editorIngredient(ingredient).orElse(null);
+            if (!doStart || !ClientEditorState.isEditing() || dragged == null) {
                 return Collections.emptyList();
             }
 
-            List<RecipeTarget> editableTargets = visibleEditableTargets(gui);
+            List<RecipeTarget> editableTargets = visibleEditableTargets(gui, dragged.kind());
             if (!editableTargets.isEmpty()) {
                 List<Rect2i> highlightAreas = new ArrayList<Rect2i>();
                 for (RecipeTarget target : editableTargets) {
@@ -957,7 +1073,7 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
 
                         @Override
                         public void accept(I ignored) {
-                            stack.ifPresent(value -> applyAtTarget(recipeTarget, value));
+                            applyAtTarget(recipeTarget, dragged);
                         }
                     });
                 }
@@ -967,14 +1083,13 @@ public final class JeiRecipeEditorPlugin implements IModPlugin {
             return Collections.emptyList();
         }
 
-        private static void applyAtTarget(RecipeTarget target, ItemStack stack) {
+        private static void applyAtTarget(RecipeTarget target, cc.sighs.JEIEditor.editor.EditorIngredient ingredient) {
             try {
                 ClientEditorState.rememberTarget(target.model, target.slotKey, target.slots, target.recipe);
                 ClientEditorState.setPendingPatch(RecipeEditorAdapters.replaceSlot(
-                        target.model, target.slotKey, stack,
-                        Minecraft.getInstance().level == null ? null
-                                : Minecraft.getInstance().level.registryAccess()));
-                ClientEditorState.setLastDrop("Placed " + stack.getHoverName().getString() + " in " + target.slotKey);
+                        target.model, target.slotKey, ingredient));
+                ClientEditorState.setLastDrop("Placed " + ingredient.kind().id() + " " + ingredient.id()
+                        + " in " + target.slotKey);
             } catch (IllegalArgumentException exception) {
                 ClientEditorState.setLastDrop(exception.getMessage());
             }

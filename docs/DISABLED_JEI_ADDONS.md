@@ -61,7 +61,7 @@ NeoForge 只加载 `.jar`，因此它们不参与启动）。
 ## 已做的验证
 
 1. 依赖检查：禁用后**没有任何保留的 jar 依赖被禁用的 mod id**，无悬空依赖。
-2. 静态依赖校验（`build/tmp/modsearch/verify.py`）：68 个 jar，无缺失必需依赖。
+2. 静态依赖校验（`scripts/jei-mod-env/verify.py`）：68 个 jar，无缺失必需依赖。
 3. 客户端实测：开发客户端启动进入主菜单，日志无 mod 加载错误、无 mod 冲突。
 
 `run/mods/` 当前状态：**68 个启用的 jar + 8 个已禁用**（原 76 个）。
@@ -78,10 +78,10 @@ NeoForge 只加载 `.jar`，因此它们不参与启动）。
 
 ```powershell
 # 重新执行禁用（幂等，已禁用的会跳过）
-python build\tmp\modsearch\disable_addons.py
+python scripts\jei-mod-env\disable_addons.py
 
 # 依赖影响评估（禁用前应先跑，确认没有别的模组依赖它们）
-python build\tmp\modsearch\check_disable_impact.py
+python scripts\jei-mod-env\check_disable_impact.py
 
 # 回滚单个模组
 cd targets\neoforge-1.21.1\run\mods

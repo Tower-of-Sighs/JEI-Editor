@@ -1,0 +1,43 @@
+# Development-only second mod for the JEI Editor NeoForge 1.21.1 target.
+#
+# It is compiled from src/clientTest and is only loaded by the "clientTest"
+# Gradle run (see RunModel.loadedMods in build.gradle). It is deliberately not
+# part of sourceSets.main, so it can never reach the published jar.
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "GPL-3.0"
+
+[[mods]]
+modId = "jeieditortests"
+version = "1.0.0"
+displayName = "JEI Editor Client Tests"
+authors = "Tower of Sighs"
+description = "Runs JEI Editor's client recipe page checks inside the development client."
+
+[[dependencies.jeieditortests]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1,)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.jeieditortests]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1,1.21.2)"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies.jeieditortests]]
+modId = "jei"
+type = "required"
+versionRange = "[19.44,)"
+ordering = "AFTER"
+side = "CLIENT"
+
+[[dependencies.jeieditortests]]
+modId = "jeieditor"
+type = "required"
+versionRange = "[0,)"
+ordering = "AFTER"
+side = "BOTH"

@@ -51,7 +51,7 @@ public final class RecipeEditorCommands {
                         && (holder == null && !(cc.sighs.JEIEditor.editor.RecipePatchSemantics.isDeletion(patch)
                         || cc.sighs.JEIEditor.editor.RecipePatchSemantics.isCreation(patch))
                         || (holder != null && !cc.sighs.JEIEditor.editor.RecipePatchSemantics.isDeletion(patch)
-                        && !RecipeEditorAdapters.createModel(holder, server.registryAccess()).isPresent())))
+                        && !hasModel(server, holder, patch))))
                         || !RecipeEditsApplier.canApply(server, patch)) throw new IOException("stale or unsupported patch: " + patch.recipeId());
             }
             if (patches.isEmpty()) { source.sendSuccess(() -> Component.literal("Import contained no recipe edits"), false); return 1; }
@@ -62,6 +62,15 @@ public final class RecipeEditorCommands {
     private static void applyImported(MinecraftServer server, CommandSourceStack source, List<RecipePatch> patches, int index) {
         if (index >= patches.size()) { RecipeEditCoordinator.finish(server); source.sendSuccess(() -> Component.literal("Imported " + patches.size() + " recipe edits"), true); return; }
         RecipeEditsApplier.apply(server, patches.get(index)).whenComplete((ignored, error) -> server.execute(() -> { if (error != null) { RecipeEditCoordinator.finish(server); source.sendFailure(Component.literal("Import failed: " + message(error))); } else applyImported(server, source, patches, index + 1); }));
+    }
+    /**
+     * A patch needs a model: either a vanilla adapter understands the recipe, or
+     * the serializer is a declared mod recipe type (whose model is rebuilt from
+     * the declaration on the server side).
+     */
+    private static boolean hasModel(MinecraftServer server, RecipeHolder<?> holder, RecipePatch patch) {
+        return RecipeEditorAdapters.createModel(holder, server.registryAccess()).isPresent()
+                || cc.sighs.JEIEditor.platform.recipe.ModdedRecipeAdapters.supports(patch.serializerId());
     }
     private static Path filePath(MinecraftServer server, String name) { return server.getServerDirectory().resolve("config").resolve("jeieditor").resolve("exports").resolve(name + ".json").normalize(); }
     private static boolean validName(String name) { return name != null && name.matches("[A-Za-z0-9._-]{1,64}") && !".".equals(name) && !"..".equals(name); }

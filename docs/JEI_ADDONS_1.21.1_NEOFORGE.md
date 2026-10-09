@@ -126,7 +126,7 @@
    JEED、JEBr、Just Enough Characters 等并不声明 JEI 依赖，而是运行期探测配方查看器，
    仅靠依赖声明会漏掉，必须用接口实现来判定。
 5. 按 jar 声明的必选依赖（JEI 与 JEI 侧库除外）过滤出可独立安装的集合，复制到 `run/mods/`。
-6. 用 `build/tmp/modsearch/run-client.ps1` 启动开发客户端（JDK 21）验证，
+6. 用 `scripts/jei-mod-env/run-client.ps1` 启动开发客户端（JDK 21）验证，
    逐个消除依赖冲突，直到客户端进入主菜单且日志无 mod 加载错误。
 
 中间产物位于 `build/tmp/modsearch/`（`staged.json` 为全部候选的元数据，

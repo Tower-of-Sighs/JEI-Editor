@@ -61,9 +61,26 @@ cd targets\neoforge-1.21.1
 .\gradlew.bat publishMods
 ```
 
+## 验证
+
+改动页面级功能前先跑单一入口，它按顺序执行 common 单测、客户端配方页测试、声明式服务端冒烟测试，任一阶段失败即非零退出：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\jei-verify.ps1
+```
+
+也可以单独运行两个 harness：
+
+- [客户端配方页测试](scripts/jei-client-tests.ps1)：在开发客户端里遍历 JEI 注册的全部页面并断言建模与补丁往返。
+- [声明式服务端冒烟测试](scripts/jei-declared-smoke.ps1)：起专用服务端导入声明式补丁，断言生成包 JSON 且能通过 `/reload`。
+
+两个 harness 依赖 `targets/neoforge-1.21.1/run/mods/` 下的模组包，该包由 [scripts/jei-mod-env/](scripts/jei-mod-env/README.md) 中的工具装配。
+
 ## 版本参考
 
 - [NeoForge 1.21.1 版本参考](docs/version-differences/README.md)
 - [1.21.1 NeoForge JEI 附属清单](docs/JEI_ADDONS_1.21.1_NEOFORGE.md)
 - [需要内容模组的 JEI 附属：安装说明](docs/JEI_ADDONS_CONTENT_MODS.md)
 - [被禁用的 JEI 附属](docs/DISABLED_JEI_ADDONS.md)
+- [JEI 页面兼容清单（TODO）](docs/JEI_PAGE_COMPAT_TODO.md)
+- [单个 JEI 配方页面接入可视化编辑的工作流](docs/JEI_PAGE_COMPAT_WORKFLOW.md)

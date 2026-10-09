@@ -1,0 +1,199 @@
+{
+ "uids": {
+  "betterpiglintrades:piglin_barter": [
+   "better-piglin-trades"
+  ],
+  "cobblemon:berry_recipe": [
+   "cobblemon"
+  ],
+  "horsepowered:grinding": [
+   "horse-powered"
+  ],
+  "horsepowered:manual_grinding": [
+   "horse-powered"
+  ],
+  "horsepowered:chopping": [
+   "horse-powered"
+  ],
+  "horsepowered:manual_chopping": [
+   "horse-powered"
+  ],
+  "horsepowered:pressing": [
+   "horse-powered"
+  ],
+  "horsepowered:drying": [
+   "horse-powered"
+  ],
+  "jerm:jerm_repair": [
+   "jerm"
+  ],
+  "just_enough_beacons:beacon_base_block": [
+   "just-enough-beacons-reforged"
+  ],
+  "just_enough_beacons:beacon_payment": [
+   "just-enough-beacons-reforged"
+  ],
+  "just_enough_beacons:conduit_frame_block": [
+   "just-enough-beacons-reforged"
+  ],
+  "jeed:effect_info": [
+   "just-enough-effect-descriptions-jeed"
+  ],
+  "justenoughprofessions:professions": [
+   "just-enough-professions-jep"
+  ],
+  "nnp_easy_farming:grindstone_recipe": [
+   "nnp-easy-farming"
+  ],
+  "createresourcegeodes:catalyst_generation": [
+   "resource-geodes-catalysts"
+  ],
+  "sengoku_compats_nf:sake_brewing": [
+   "sengoku-emijei"
+  ],
+  "sake_brewing:sake_aging": [
+   "sengoku-emijei"
+  ],
+  "sengoku_compats_nf:tea_boiling": [
+   "sengoku-emijei"
+  ],
+  "silentgear:alloy_making/fabric": [
+   "silent-gear"
+  ],
+  "silentgear:alloy_making/gem": [
+   "silent-gear"
+  ],
+  "silentgear:alloy_making/metal": [
+   "silent-gear"
+  ],
+  "silentgear:alloy_making/super": [
+   "silent-gear"
+  ],
+  "silentgear:gear_crafting": [
+   "silent-gear"
+  ],
+  "silentgear:grading": [
+   "silent-gear"
+  ],
+  "grading:salvaging": [
+   "silent-gear"
+  ],
+  "silentgear:tool_action": [
+   "silent-gear"
+  ],
+  "silentgearjei:silentgear_material": [
+   "silentgearjei"
+  ],
+  "silentgearjei:silentgear_trait": [
+   "silentgearjei"
+  ],
+  "smithingtemplateviewer:smithing_trim": [
+   "smithing-template-viewer"
+  ],
+  "uei:ench_info": [
+   "uei"
+  ]
+ },
+ "categories": {
+  "advanced-loot-info": [
+   "com.yanny.ali.jei.compatibility.jei.JeiBaseLoot"
+  ],
+  "advanced-worldgen-info": [
+   "com.yanny.awi.jei.compatibility.jei.JeiBaseLoot"
+  ],
+  "better-piglin-trades": [
+   "com.breakinblocks.betterpiglintrades.integration.jei.PiglinBarterCategory"
+  ],
+  "cobblemon": [
+   "com.cobblemon.mod.common.integration.jei.berry.BerryRecipeCategory",
+   "com.cobblemon.mod.common.integration.jei.cooking.CampfirePotRecipeCategory"
+  ],
+  "create": [
+   "com.simibubi.create.compat.jei.category.CreateRecipeCategory"
+  ],
+  "horse-powered": [
+   "com.breakinblocks.horsepowered.compat.jei.HorsePowerBottlingCategory",
+   "com.breakinblocks.horsepowered.compat.jei.HorsePowerCrushingCategory",
+   "com.breakinblocks.horsepowered.compat.jei.HorsePowerDryingCategory",
+   "com.breakinblocks.horsepowered.compat.jei.HorsePowerGrindingCategory",
+   "com.breakinblocks.horsepowered.compat.jei.HorsePowerManualChoppingCategory",
+   "com.breakinblocks.horsepowered.compat.jei.HorsePowerManualGrindingCategory",
+   "com.breakinblocks.horsepowered.compat.jei.HorsePowerPressCategory",
+   "com.breakinblocks.horsepowered.compat.jei.HorsePowerTrappingCategory"
+  ],
+  "immersiveengineering": [
+   "blusunrize.immersiveengineering.common.util.compat.jei.IERecipeCategory"
+  ],
+  "jea": [
+   "de.melanx.jea.recipe.AdvancementCategory"
+  ],
+  "jefa": [
+   "com.wachi.jefa.AbstractJefaCategory",
+   "com.wachi.jefa.mob_interaction.MobInteractionCategory"
+  ],
+  "jei-multiblocks": [
+   "sguest.jeimultiblocks.jei.MultiblockRecipeCategory"
+  ],
+  "jei-worldgen": [
+   "de.larsensmods.jeiworldgen.jei.JEIWorldGenCategory"
+  ],
+  "jerm": [
+   "github.iri.jerm.jei.JermRepairCategory"
+  ],
+  "just-enough-archaeology": [
+   "cy.jdkdigital.jearchaeology.jei.BrushRecipeCategory",
+   "cy.jdkdigital.jearchaeology.jei.SniffRecipeCategory"
+  ],
+  "just-enough-beacons-reforged": [
+   "com.cerbon.just_enough_beacons.jei.beacon_base_block.BeaconBaseBlockCategory",
+   "com.cerbon.just_enough_beacons.jei.beacon_payment.BeaconPaymentCategory",
+   "com.cerbon.just_enough_beacons.jei.conduit_base_block.ConduitFrameBlockCategory"
+  ],
+  "just-enough-effect-descriptions-jeed": [
+   "net.mehvahdjukaar.jeed.plugin.jei.display.EffectInfoRecipeCategory"
+  ],
+  "just-enough-professions-jep": [
+   "com.mrbysco.justenoughprofessions.jei.ProfessionCategory"
+  ],
+  "just-enough-resources-jer": [
+   "jeresources.jei.BlankJEIRecipeCategory"
+  ],
+  "justenoughbreeding": [
+   "com.christofmeg.justenoughbreeding.jei.AllayDuplicationCategory",
+   "com.christofmeg.justenoughbreeding.jei.BreedingCategory",
+   "com.christofmeg.justenoughbreeding.jei.TamingCategory",
+   "com.christofmeg.justenoughbreeding.jei.TemperCategory",
+   "com.christofmeg.justenoughbreeding.jei.TransformationCategory",
+   "com.christofmeg.justenoughbreeding.jei.TrustingCategory"
+  ],
+  "mekanism": [
+   "mekanism.client.recipe_viewer.jei.BaseRecipeCategory"
+  ],
+  "nnp-easy-farming": [
+   "com.github.no_name_provided.easy_farming.client.jei.categories.GrindingRecipeCategory"
+  ],
+  "resource-geodes-catalysts": [
+   "com.lithiumcraft.createresourcegeodes.compat.jei.CatalystRecipeCategory"
+  ],
+  "sengoku-emijei": [
+   "com.almalexy.sengoku_emi_jei_nf.jei.category.JeiSakeAgingCategory",
+   "com.almalexy.sengoku_emi_jei_nf.jei.category.JeiTeaBoilingCategory"
+  ],
+  "silent-gear": [
+   "net.silentchaos512.gear.compat.jei.AlloyMakingRecipeCategory",
+   "net.silentchaos512.gear.compat.jei.GearCraftingRecipeCategoryJei",
+   "net.silentchaos512.gear.compat.jei.SalvagingRecipeCategoryJei",
+   "net.silentchaos512.gear.compat.jei.ToolActionRecipeCategory"
+  ],
+  "silentgearjei": [
+   "com.drowningfish233.silentgearjei.compat.jei.SilentGearMaterialsJeiPlugin$MaterialCategory",
+   "com.drowningfish233.silentgearjei.compat.jei.SilentGearTraitsJeiPlugin$TraitCategory"
+  ],
+  "smithing-template-viewer": [
+   "com.buuz135.smithingtemplateviewer.jei.JEISmithingViewerCategory"
+  ],
+  "uei": [
+   "io.github.suel_ki.uei.compat.jei.EnchantmentRecipeCategory"
+  ]
+ }
+}

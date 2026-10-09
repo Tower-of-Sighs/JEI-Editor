@@ -3,11 +3,15 @@ package cc.sighs.JEIEditor.server;
 import cc.sighs.JEIEditor.editor.EditorIngredient;
 import cc.sighs.JEIEditor.editor.EditorModel;
 import cc.sighs.JEIEditor.editor.EditorSlot;
+import cc.sighs.JEIEditor.editor.IngredientKind;
 import cc.sighs.JEIEditor.editor.RecipePatch;
 import cc.sighs.JEIEditor.editor.RecipePatchSemantics;
+import cc.sighs.JEIEditor.editor.SlotPatchFields;
 import cc.sighs.JEIEditor.platform.fuel.FuelOverrideState;
 import cc.sighs.JEIEditor.platform.recipe.CookingRecipeEditorAdapter;
 import cc.sighs.JEIEditor.platform.recipe.CraftingSlotMapper;
+import cc.sighs.JEIEditor.platform.recipe.DerivedSlot;
+import cc.sighs.JEIEditor.platform.recipe.DerivedSlotSequence;
 import cc.sighs.JEIEditor.platform.recipe.FuelRecipeEditorAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeAdapterSupport;
 import cc.sighs.JEIEditor.platform.recipe.RecipeCreationAdapter;
@@ -15,6 +19,10 @@ import cc.sighs.JEIEditor.platform.recipe.RecipeDeletionAdapter;
 import cc.sighs.JEIEditor.platform.recipe.RecipeEditorAdapters;
 import cc.sighs.JEIEditor.platform.recipe.VanillaSpecialRecipeEditorAdapter;
 import cc.sighs.JEIEditor.platform.recipe.JeiVanillaRecipeEditorAdapter;
+import cc.sighs.JEIEditor.platform.recipe.ModdedJsonStyle;
+import cc.sighs.JEIEditor.platform.recipe.ModdedRecipeAdapter;
+import cc.sighs.JEIEditor.platform.recipe.ModdedRecipeAdapters;
+import cc.sighs.JEIEditor.recipe.RecipeFieldMapping;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -33,6 +41,7 @@ import net.minecraft.world.item.crafting.ShapedRecipe;
 import net.minecraft.world.item.crafting.ShapelessRecipe;
 import net.minecraft.world.item.crafting.AbstractCookingRecipe;
 import net.minecraft.world.item.crafting.Ingredient;
+import net.minecraft.world.item.crafting.Recipe;
 import net.minecraft.world.item.crafting.StonecutterRecipe;
 import net.minecraft.world.item.crafting.SmithingRecipe;
 import net.minecraft.world.item.Item;
@@ -47,10 +56,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Stream;
@@ -78,6 +89,7 @@ public final class RecipeEditsApplier {
             return false;
         }
         if (RecipePatchSemantics.isCreation(patch)) {
+            // createNewRecipeJson already requires a creatable vanilla serializer.
             return "jeieditor".equals(recipeId.getNamespace())
                     && server.getRecipeManager().byKey(recipeId).isEmpty()
                     && createNewRecipeJson(patch).isPresent();
@@ -87,10 +99,22 @@ public final class RecipeEditsApplier {
             return false;
         }
         if (RecipePatchSemantics.isDeletion(patch)) {
+            // Deleting a recipe leaves an empty override and never rebuilds it, so it stays
+            // valid for any serializer, modded ones included.
             return RecipeDeletionAdapter.matches(holder, patch.serializerId(), patch.baseFingerprint());
         }
-        return RecipeEditorAdapters.createModel(holder, server.registryAccess())
-                .flatMap(model -> createRecipeJson(holder, patch, server.registryAccess(), model)).isPresent();
+        // An edit is only applicable when this editor implements the serializer: a declared
+        // mod recipe type, which is patched in place, or one of the vanilla serializers that
+        // has a dedicated adapter. A modded serializer whose recipe class merely extends a
+        // vanilla one is neither, and rebuilding such a recipe in the vanilla JSON shape
+        // would drop the mod's own fields.
+        if (!ModdedRecipeAdapters.supports(patch.serializerId())
+                && !RecipeEditorAdapters.isImplementedVanillaSerializer(patch.serializerId())) {
+            return false;
+        }
+        return patchModel(server, holder, patch)
+                .flatMap(model -> createRecipeJson(server, holder, patch, server.registryAccess(), model))
+                .isPresent();
     }
 
     public static CompletableFuture<Void> apply(MinecraftServer server, RecipePatch patch) {
@@ -121,7 +145,7 @@ public final class RecipeEditsApplier {
             }
             Optional<JsonObject> json = RecipePatchSemantics.isCreation(patch)
                     ? createNewRecipeJson(patch)
-                    : createRecipeJson(holder, patch, server.registryAccess());
+                    : createRecipeJson(server, holder, patch, server.registryAccess());
             if (!json.isPresent()) {
                 throw new IOException("recipe patch is stale or unsupported: " + patch.recipeId());
             }
@@ -170,7 +194,7 @@ public final class RecipeEditsApplier {
             }
             Optional<JsonObject> json = RecipePatchSemantics.isCreation(patch)
                     ? createNewRecipeJson(patch)
-                    : createRecipeJson(holder, patch, server.registryAccess());
+                    : createRecipeJson(server, holder, patch, server.registryAccess());
             if (!json.isPresent()) {
                 throw new IOException("recipe patch is stale or unsupported: " + patch.recipeId());
             }
@@ -889,7 +913,8 @@ public final class RecipeEditsApplier {
         }
     }
 
-    private static Optional<JsonObject> createRecipeJson(RecipeHolder<?> holder, RecipePatch patch,
+    private static Optional<JsonObject> createRecipeJson(MinecraftServer server, RecipeHolder<?> holder,
+                                                          RecipePatch patch,
                                                           HolderLookup.Provider registries) {
         if (RecipePatchSemantics.isCreation(patch)) {
             return createNewRecipeJson(patch);
@@ -898,8 +923,85 @@ public final class RecipeEditsApplier {
             return RecipeDeletionAdapter.matches(holder, patch.serializerId(), patch.baseFingerprint())
                     ? Optional.of(new JsonObject()) : Optional.empty();
         }
-        Optional<EditorModel> model = RecipeEditorAdapters.createModel(holder, registries);
-        return model.flatMap(value -> createRecipeJson(holder, patch, registries, value));
+        return patchModel(server, holder, patch)
+                .flatMap(model -> createRecipeJson(server, holder, patch, registries, model));
+    }
+
+    /**
+     * The model a patch is validated and rebuilt against. Declared mod types
+     * only expose the slot layout their declaration promises: JEI's displayed
+     * representatives cannot be replayed on the server, so their slot contents
+     * stay unknown here and the editor patches the original recipe JSON.
+     */
+    private static Optional<EditorModel> patchModel(MinecraftServer server, RecipeHolder<?> holder,
+                                                     RecipePatch patch) {
+        Optional<ModdedRecipeAdapter> declared = ModdedRecipeAdapters.forSerializer(patch.serializerId());
+        if (declared.isPresent()) {
+            return declaredModel(patch, declared.get());
+        }
+        return RecipeEditorAdapters.createModel(holder, server.registryAccess());
+    }
+
+    /**
+     * The declared model of the patch being applied. A declaration names the
+     * recipe JSON field of every slot, so the model is derived from the patch's
+     * own slots: each one must be addressable, and a variable-arity declaration
+     * ({@code %d}) addresses any ordinal the original JSON happens to carry - as
+     * does a concatenated output list, whose ordinal-to-path mapping only the
+     * recipe JSON decides. Whether the addressed path really exists is decided
+     * while the JSON is rewritten, which refuses the whole patch instead of
+     * writing part of it.
+     */
+    private static Optional<EditorModel> declaredModel(RecipePatch patch, ModdedRecipeAdapter adapter) {
+        List<EditorSlot> slots = new ArrayList<EditorSlot>();
+        for (String key : patch.fields().keySet()) {
+            int separator = key.lastIndexOf('.');
+            if (separator <= 0) {
+                return Optional.empty();
+            }
+            String slotKey = key.substring(0, separator);
+            if (!declarationNames(adapter, slotKey)) {
+                return Optional.empty();
+            }
+            if (findSlot(slots, slotKey) != null) {
+                continue;
+            }
+            slots.add(new EditorSlot(slotKey,
+                    RecipeFieldMapping.outputIndex(slotKey) >= 0 ? "output" : "input", null));
+        }
+        if (slots.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.of(new EditorModel(patch.recipeId(), patch.serializerId(),
+                patch.baseFingerprint(), slots));
+    }
+
+    /**
+     * Whether the declaration names a slot key. A concatenated output list is an
+     * ordered segment list resolved against the recipe JSON, which this model
+     * does not carry, so any output ordinal is accepted here;
+     * {@link #createModdedRecipeJson} resolves the ordinal against the JSON and
+     * refuses the whole patch when the concatenation does not reach it. A
+     * recipe-derived slot sequence is resolved there too, for both roles.
+     */
+    private static boolean declarationNames(ModdedRecipeAdapter adapter, String slotKey) {
+        if (adapter.derivedSlots() != null) {
+            return RecipeFieldMapping.inputOrdinal(slotKey) >= 0
+                    || RecipeFieldMapping.outputIndex(slotKey) >= 0;
+        }
+        if (adapter.concatenatedOutputs() && RecipeFieldMapping.outputIndex(slotKey) >= 0) {
+            return true;
+        }
+        return RecipeFieldMapping.field(adapter.inputFields(), adapter.outputFields(), slotKey) != null;
+    }
+
+    private static EditorSlot findSlot(List<EditorSlot> slots, String slotKey) {
+        for (EditorSlot slot : slots) {
+            if (slotKey.equals(slot.key())) {
+                return slot;
+            }
+        }
+        return null;
     }
 
     private static Optional<JsonObject> createNewRecipeJson(RecipePatch patch) {
@@ -1036,19 +1138,37 @@ public final class RecipeEditsApplier {
         return grid;
     }
 
-    private static Optional<JsonObject> createRecipeJson(RecipeHolder<?> holder, RecipePatch patch,
+    private static Optional<JsonObject> createRecipeJson(MinecraftServer server, RecipeHolder<?> holder,
+                                                          RecipePatch patch,
                                                           HolderLookup.Provider registries, EditorModel model) {
-        if (model == null || !model.baseFingerprint().equals(patch.baseFingerprint())
-                || !model.serializerId().equals(patch.serializerId())
-                || !validatePatch(model, patch)) {
+        // A declared model cannot reproduce the client's fingerprint: its slot
+        // contents come from JEI's ingredient supplier, which the server cannot
+        // replay. Declared patches are gated by their slot layout and by the
+        // original recipe JSON instead.
+        Optional<ModdedRecipeAdapter> declared = ModdedRecipeAdapters.forSerializer(patch.serializerId());
+        if (model == null || !model.serializerId().equals(patch.serializerId())
+                || !validatePatch(model, patch)
+                || (!declared.isPresent() && !model.baseFingerprint().equals(patch.baseFingerprint()))) {
             return Optional.empty();
         }
 
-        return createRecipeJsonContent(holder, patch, model);
+        return createRecipeJsonContent(server, holder, patch, model);
     }
 
-    private static Optional<JsonObject> createRecipeJsonContent(RecipeHolder<?> holder, RecipePatch patch,
-                                                                 EditorModel model) {
+    private static Optional<JsonObject> createRecipeJsonContent(MinecraftServer server, RecipeHolder<?> holder,
+                                                                 RecipePatch patch, EditorModel model) {
+        Optional<ModdedRecipeAdapter> declared = ModdedRecipeAdapters.forSerializer(patch.serializerId());
+        if (declared.isPresent()) {
+            return createModdedRecipeJson(server, holder, patch, model, declared.get());
+        }
+
+        // Everything below rebuilds the recipe in the vanilla serializer's own JSON shape,
+        // which is only correct for a serializer this editor implements. Gate here as well
+        // as in the adapters and in canApply: the write path must never emit a vanilla
+        // object for a modded serializer that merely extends a vanilla recipe class.
+        if (!RecipeEditorAdapters.isImplementedVanillaSerializer(patch.serializerId())) {
+            return Optional.empty();
+        }
 
         List<EditorIngredient> inputs = new ArrayList<EditorIngredient>();
         for (EditorSlot slot : model.slots()) {
@@ -1105,6 +1225,13 @@ public final class RecipeEditsApplier {
             recipe.add("ingredients", ingredients);
         } else if (holder.value() instanceof AbstractCookingRecipe) {
             if (inputs.size() != 1 || inputs.get(0) == null) return Optional.empty();
+            // The group is part of the recipe record, so it is written back like the
+            // crafting branch above does: dropping it would silently change the
+            // recipe book grouping of a recipe this editor only meant to edit.
+            String cookingGroup = ((AbstractCookingRecipe) holder.value()).getGroup();
+            if (!cookingGroup.isEmpty()) {
+                recipe.addProperty("group", cookingGroup);
+            }
             recipe.add("ingredient", cookingIngredientJson(
                     (AbstractCookingRecipe) holder.value(), patch, inputs.get(0)));
             recipe.addProperty("experience", cookingExperience(model, patch));
@@ -1136,6 +1263,371 @@ public final class RecipeEditsApplier {
             recipe.add("result", resultJson(output));
         }
         return Optional.of(recipe);
+    }
+
+    /**
+     * Declared mod recipe types keep their original recipe JSON and only have
+     * the edited fields replaced, so unrelated keys (conditions, chances, molds
+     * or any other mod data) survive verbatim.
+     */
+    private static Optional<JsonObject> createModdedRecipeJson(MinecraftServer server, RecipeHolder<?> holder,
+                                                                RecipePatch patch,
+                                                                EditorModel model, ModdedRecipeAdapter adapter) {
+        ResourceLocation recipeId = ResourceLocation.tryParse(patch.recipeId());
+        if (recipeId == null) {
+            return Optional.empty();
+        }
+        JsonObject recipe;
+        try {
+            recipe = readRecipeJson(server, recipeId, recipePath(server, recipeId));
+        } catch (IOException | RuntimeException exception) {
+            return Optional.empty();
+        }
+        DerivedSlotSequence derived = adapter.derivedSlots();
+        if (derived != null) {
+            return createDerivedRecipeJson(recipe, holder, patch, model, adapter, derived);
+        }
+        List<String> inputFields = adapter.inputFields();
+        List<String> outputFields = adapter.outputFields();
+        // A concatenated output list is resolved against this exact recipe JSON,
+        // because which segment lands at which ordinal depends on it.
+        RecipeFieldMapping.SegmentSource segments =
+                adapter.concatenatedOutputs() ? new JsonSegmentSource(recipe) : null;
+        for (EditorSlot slot : model.slots()) {
+            if (!hasSlotPatch(patch, slot.key())) {
+                continue;
+            }
+            String declaredField;
+            if (segments != null && "output".equals(slot.role())) {
+                declaredField = RecipeFieldMapping.segmentPath(outputFields,
+                        RecipeFieldMapping.outputIndex(slot.key()), segments);
+            } else {
+                declaredField = RecipeFieldMapping.field(inputFields, outputFields, slot.key());
+            }
+            if (declaredField == null) {
+                return Optional.empty();
+            }
+            JsonElement original = readPath(recipe, declaredField);
+            if (adapter.preservesIngredientBase(declaredField)) {
+                Optional<Boolean> preserved = writePreservedIngredientBase(
+                        original, patch, slot.key(), adapter);
+                if (!preserved.isPresent()) {
+                    return Optional.empty();
+                }
+                if (preserved.get().booleanValue()) {
+                    continue;
+                }
+            }
+            Optional<JsonElement> value = declaredValueJson(original, patch, slot.key(),
+                    declaredField, adapter, "output".equals(slot.role()));
+            if (!value.isPresent() || !writePath(recipe, declaredField, value.get())) {
+                return Optional.empty();
+            }
+        }
+        return Optional.of(recipe);
+    }
+
+    /**
+     * Writes the slots of a recipe-derived sequence ({@link DerivedSlotSequence}) -
+     * Create's basin pages - by resolving the whole sequence from the recipe the
+     * patch targets and rewriting the paths the ordinal of each patched slot
+     * resolved to.
+     *
+     * <p>The sequence is the only thing that knows where a slot lives, so it is
+     * resolved here, once, against the original JSON and the recipe the mod loaded;
+     * a recipe the sequence cannot reproduce answers empty and the patch is refused
+     * with nothing written. A slot resolved to several paths (the mod merged those
+     * recipe entries into one drawn slot) writes the same value to all of them,
+     * which is what keeps the recipe's own multiplicity - and therefore the merged
+     * layout the page shows after the reload - unchanged.
+     */
+    private static Optional<JsonObject> createDerivedRecipeJson(JsonObject recipe, RecipeHolder<?> holder,
+                                                                RecipePatch patch, EditorModel model,
+                                                                ModdedRecipeAdapter adapter,
+                                                                DerivedSlotSequence sequence) {
+        Recipe<?> loaded = holder == null ? null : holder.value();
+        Optional<List<DerivedSlot>> inputs = sequence.inputSlots(recipe, loaded);
+        Optional<List<DerivedSlot>> outputs = sequence.outputSlots(recipe, loaded);
+        if (!inputs.isPresent() || !outputs.isPresent()) {
+            return Optional.empty();
+        }
+        for (EditorSlot slot : model.slots()) {
+            if (!hasSlotPatch(patch, slot.key())) {
+                continue;
+            }
+            boolean output = "output".equals(slot.role());
+            int ordinal = output ? RecipeFieldMapping.outputIndex(slot.key())
+                    : RecipeFieldMapping.inputOrdinal(slot.key());
+            List<DerivedSlot> slots = output ? outputs.get() : inputs.get();
+            if (ordinal < 0 || ordinal >= slots.size()) {
+                return Optional.empty();
+            }
+            DerivedSlot target = slots.get(ordinal);
+            IngredientKind kind = SlotPatchFields.kindOf(patch.fields(), slot.key());
+            if (kind == null || kind != target.kind()) {
+                // The kind of the field the sequence resolved to, not of a declared
+                // field pattern: which band this ordinal is in is what the sequence
+                // just decided.
+                return Optional.empty();
+            }
+            Optional<JsonElement> value = declaredValueJson(readPath(recipe, target.paths().get(0)),
+                    patch, slot.key(), kind, adapter.styleFor(kind, output),
+                    adapter.fixedIdOfField(target.paths().get(0)));
+            if (!value.isPresent()) {
+                return Optional.empty();
+            }
+            for (String path : target.paths()) {
+                if (!writePath(recipe, path, value.get())) {
+                    return Optional.empty();
+                }
+            }
+        }
+        return Optional.of(recipe);
+    }
+
+    /**
+     * Rewrites only the base of a nested ingredient node of a field the declaration
+     * names as base-preserving ({@link ModdedRecipeAdapter#preservesIngredientBase}),
+     * keeping every other key of the node - {@code type}, {@code count} and the
+     * sibling operands such as {@code neoforge:difference}'s {@code subtracted} -
+     * exactly as the file had them.
+     *
+     * <p>Answers {@code false} for a node that is not nested, so its field is written
+     * the ordinary way, and empty to refuse the patch. The edited item goes into
+     * {@code base} as the declaration's own item id key and nothing else: the outer
+     * {@code count} of a {@code SizedIngredient} is that ingredient's amount, and all
+     * 176 shipped {@code mekanism:painting} recipes write 1 there while the page draws
+     * one item, so the conservative reading - the editor edits which item the
+     * difference starts from, not how many the recipe consumes - leaves it untouched
+     * instead of writing a count the slot never showed.
+     */
+    private static Optional<Boolean> writePreservedIngredientBase(JsonElement node, RecipePatch patch,
+                                                                  String slotKey, ModdedRecipeAdapter adapter) {
+        if (node == null || !node.isJsonObject()) {
+            return Optional.of(Boolean.FALSE);
+        }
+        JsonObject object = node.getAsJsonObject();
+        JsonElement base = object.get("base");
+        if (base == null || !base.isJsonObject()) {
+            return Optional.of(Boolean.FALSE);
+        }
+        IngredientKind kind = SlotPatchFields.kindOf(patch.fields(), slotKey);
+        String id = kind == null ? null : SlotPatchFields.id(patch.fields(), slotKey);
+        if (kind != IngredientKind.ITEM || id == null || !validIngredientId(kind, id)) {
+            return Optional.empty();
+        }
+        JsonObject rewritten = new JsonObject();
+        rewritten.addProperty(ModdedJsonStyle.of(adapter.inputStyle()).idKey(), id);
+        object.add("base", rewritten);
+        return Optional.of(Boolean.TRUE);
+    }
+
+    /**
+     * Reads a declared recipe JSON path. A plain segment is an object key; a
+     * numeric segment indexes an array, so {@code ingredients.0} addresses the
+     * first element of {@code ingredients} (the shape Create uses).
+     */
+    private static JsonElement readPath(JsonObject root, String path) {
+        JsonElement current = root;
+        for (String segment : path.split("\\.")) {
+            if (current == null) {
+                return null;
+            }
+            if (current.isJsonArray()) {
+                int index = parseIndex(segment);
+                JsonArray array = current.getAsJsonArray();
+                current = index < 0 || index >= array.size() ? null : array.get(index);
+            } else if (current.isJsonObject()) {
+                current = current.getAsJsonObject().get(segment);
+            } else {
+                return null;
+            }
+        }
+        return current;
+    }
+
+    /**
+     * The read-only view of one recipe JSON that a concatenated output list is
+     * resolved against. A plain path counts when the recipe carries it and the
+     * value is not empty; a missing array counts as empty - no element, exactly
+     * like an array that is present but empty - while a present value that is
+     * not an array is an error the expansion refuses. This mirrors what the JEI
+     * category draws: it adds a slot only for a non-empty {@code stripped} /
+     * {@code slag}, and one per element of an array that may be missing.
+     */
+    private static final class JsonSegmentSource implements RecipeFieldMapping.SegmentSource {
+        private final JsonObject recipe;
+
+        private JsonSegmentSource(JsonObject recipe) {
+            this.recipe = recipe;
+        }
+
+        @Override
+        public boolean hasPath(String path) {
+            JsonElement value = readPath(recipe, path);
+            if (value == null || value.isJsonNull()) {
+                return false;
+            }
+            if (value.isJsonObject()) {
+                return value.getAsJsonObject().size() > 0;
+            }
+            if (value.isJsonArray()) {
+                return value.getAsJsonArray().size() > 0;
+            }
+            return true;
+        }
+
+        @Override
+        public int arrayLength(String path) {
+            JsonElement value = readPath(recipe, path);
+            if (value == null || value.isJsonNull()) {
+                return 0;
+            }
+            return value.isJsonArray() ? value.getAsJsonArray().size() : -1;
+        }
+    }
+
+    /** Writes a declared recipe JSON path, creating a missing array when needed. */
+    private static boolean writePath(JsonObject root, String path, JsonElement value) {
+        String[] segments = path.split("\\.");
+        JsonElement current = root;
+        for (int index = 0; index < segments.length - 1; index++) {
+            String segment = segments[index];
+            JsonElement next;
+            if (current.isJsonArray()) {
+                int arrayIndex = parseIndex(segment);
+                JsonArray array = current.getAsJsonArray();
+                if (arrayIndex < 0 || arrayIndex >= array.size()) {
+                    return false;
+                }
+                next = array.get(arrayIndex);
+            } else if (current.isJsonObject()) {
+                next = current.getAsJsonObject().get(segment);
+            } else {
+                return false;
+            }
+            if (next == null) {
+                return false;
+            }
+            current = next;
+        }
+        String last = segments[segments.length - 1];
+        if (current.isJsonArray()) {
+            int arrayIndex = parseIndex(last);
+            JsonArray array = current.getAsJsonArray();
+            if (arrayIndex < 0 || arrayIndex >= array.size()) {
+                return false;
+            }
+            array.set(arrayIndex, value);
+            return true;
+        }
+        if (current.isJsonObject()) {
+            current.getAsJsonObject().add(last, value);
+            return true;
+        }
+        return false;
+    }
+
+    private static int parseIndex(String segment) {
+        try {
+            return Integer.parseInt(segment);
+        } catch (NumberFormatException exception) {
+            return -1;
+        }
+    }
+
+    /**
+     * Encodes one edited slot in the JSON shape its kind and the declaration's own
+     * style require. A value the patch does not carry - the amount of a count-only
+     * edit, the id of an amount-only edit - is read from the original node with
+     * that style's keys, so a partial edit keeps what it did not name.
+     *
+     * <p>{@code fieldPath} is the recipe JSON field this slot resolved to, which for
+     * an output of an ordered segment list is known only here. The kind check is made
+     * against that field rather than against the slot key, so a mixed segment list -
+     * an optional item output followed by an optional chemical one - accepts the patch
+     * only for the field the concatenation really reached.
+     *
+     * <p>A field whose style writes the bare amount carries no id of its own, so the
+     * declaration has to fix one and any other id is refused: writing the amount alone
+     * of a dragged fluid would be read back as the fluid the field's name implies.
+     */
+    private static Optional<JsonElement> declaredValueJson(JsonElement original, RecipePatch patch,
+                                                           String slotKey, String fieldPath,
+                                                           ModdedRecipeAdapter adapter, boolean output) {
+        IngredientKind kind = SlotPatchFields.kindOf(patch.fields(), slotKey);
+        if (kind == null || adapter.kindOfField(fieldPath) != kind) {
+            return Optional.empty();
+        }
+        return declaredValueJson(original, patch, slotKey, kind, adapter.styleFor(kind, output),
+                adapter.fixedIdOfField(fieldPath));
+    }
+
+    /**
+     * The same value, with the kind, the value shape and the fixed id resolved by
+     * the caller.
+     *
+     * <p>A recipe-derived slot sequence has no declared field to ask: the kind of the
+     * slot is the kind of the band the sequence resolved it to and its style comes
+     * from that kind alone. Splitting the two keeps one encoder for both, so a
+     * derived slot is written in exactly the shape a declared field of the same kind
+     * is.
+     */
+    private static Optional<JsonElement> declaredValueJson(JsonElement original, RecipePatch patch,
+                                                           String slotKey, IngredientKind kind,
+                                                           ModdedJsonStyle style, String fixedId) {
+        String id = SlotPatchFields.id(patch.fields(), slotKey);
+        String amountText = SlotPatchFields.amount(patch.fields(), slotKey);
+        if (style.amountOnly()) {
+            if (fixedId == null) {
+                return Optional.empty();
+            }
+            if (id != null && !fixedId.equals(id)) {
+                return Optional.empty();
+            }
+            id = fixedId;
+            if (amountText == null) {
+                amountText = numberText(original);
+            }
+        } else {
+            if (fixedId != null && id != null && !fixedId.equals(id)) {
+                return Optional.empty();
+            }
+            JsonObject node = original != null && original.isJsonObject() ? original.getAsJsonObject() : null;
+            if (id == null) {
+                id = primitive(node, style.idKey());
+            }
+            if (amountText == null) {
+                amountText = primitive(node, style.amountKey());
+            }
+            if (fixedId != null && id == null) {
+                id = fixedId;
+            }
+        }
+        int amount;
+        try {
+            amount = amountText == null ? -1 : Integer.parseInt(amountText);
+        } catch (NumberFormatException exception) {
+            return Optional.empty();
+        }
+        if (id == null || id.isEmpty() || !kind.acceptsAmount(amount) || !validIngredientId(kind, id)) {
+            return Optional.empty();
+        }
+        return Optional.of(ModdedRecipeAdapters.valueElement(style, id, amount));
+    }
+
+    private static String primitive(JsonObject json, String key) {
+        if (json == null || key == null) {
+            return null;
+        }
+        JsonElement value = json.get(key);
+        return value != null && value.isJsonPrimitive() ? value.getAsString() : null;
+    }
+
+    /** A bare JSON number, as the amount-only style writes it. */
+    private static String numberText(JsonElement original) {
+        return original != null && original.isJsonPrimitive() && original.getAsJsonPrimitive().isNumber()
+                ? original.getAsString() : null;
     }
 
     private static JsonElement vanillaIngredientJson(Ingredient original, RecipePatch patch,
@@ -1191,6 +1683,7 @@ public final class RecipeEditsApplier {
         for (EditorSlot slot : model.slots()) {
             slots.put(slot.key(), slot);
         }
+        Optional<ModdedRecipeAdapter> declared = ModdedRecipeAdapters.forSerializer(model.serializerId());
         for (Map.Entry<String, String> field : patch.fields().entrySet()) {
             String key = field.getKey();
             int separator = key.lastIndexOf('.');
@@ -1208,35 +1701,79 @@ public final class RecipeEditsApplier {
                 } else return false;
                 continue;
             }
+            // Declared mod types expose exactly the slots their declaration
+            // promises (input.N plus output), so the slot lookup below already
+            // rejects any slot the declaration does not cover.
             EditorSlot slot = slots.get(key.substring(0, separator));
             if (slot == null && isCraftingGridSerializer(model.serializerId())
                     && isGridInputKey(key.substring(0, separator))) {
                 slot = new EditorSlot(key.substring(0, separator), "input", null);
             }
-            if (slot == null || (!"item".equals(property) && !"count".equals(property))) {
+            if (slot == null) {
                 return false;
             }
-            if ("item".equals(property)) {
-                ResourceLocation itemId = ResourceLocation.tryParse(field.getValue());
-                if (itemId == null || !BuiltInRegistries.ITEM.containsKey(itemId)) {
+            // Only a declared page has non-item fields, and there the kind has to
+            // be one the declaration names for the slot: a fluid written into
+            // an item field (or the reverse) is refused before anything is read.
+            // An ordered segment list allows every kind its segments hold here and
+            // the write path narrows that to the field the concatenation resolves to.
+            // This kind half of the gate is the same predicate the client's emitted
+            // field shapes are held to (SlotPatchFields.acceptsProperty), so the
+            // shapes the client can produce and the ones the server takes are one rule.
+            Set<IngredientKind> accepted = declared.isPresent()
+                    ? ModdedRecipeAdapters.declaredKinds(declared.get(), slot.key())
+                    : Collections.<IngredientKind>singleton(IngredientKind.ITEM);
+            if (!SlotPatchFields.acceptsProperty(patch.fields(), slot.key(), property, accepted)) {
+                return false;
+            }
+            IngredientKind kind = IngredientKind.forProperty(property);
+            if (property.equals(kind.idField())) {
+                if (!validIngredientId(kind, field.getValue())) {
                     return false;
                 }
-            } else {
-                int count;
-                try {
-                    count = Integer.parseInt(field.getValue());
-                } catch (NumberFormatException exception) {
-                    return false;
-                }
-                if (count < 1 || count > 64) {
-                    if (count != 0 || !"input".equals(slot.role())
-                            || !"minecraft:air".equals(patch.fields().get(slot.key() + ".item"))) {
-                        return false;
-                    }
-                }
+            } else if (!validAmount(kind, field.getValue(), slot, patch)) {
+                return false;
             }
         }
         return true;
+    }
+
+    /**
+     * Whether an id field names an ingredient the game can resolve.
+     *
+     * <p>An item and a fluid are checked against their game registries. A chemical
+     * lives in Mekanism's own registry, which this target does not compile against,
+     * so its id is only checked to be a resource id; an unknown one is caught when
+     * the written recipe is re-parsed and the write is rolled back.
+     */
+    private static boolean validIngredientId(IngredientKind kind, String value) {
+        ResourceLocation id = ResourceLocation.tryParse(value);
+        if (id == null) {
+            return false;
+        }
+        if (kind == IngredientKind.FLUID) {
+            return BuiltInRegistries.FLUID.containsKey(id);
+        }
+        if (kind == IngredientKind.CHEMICAL) {
+            return true;
+        }
+        return BuiltInRegistries.ITEM.containsKey(id);
+    }
+
+    /** The amount is inside its kind's range, or the historical item clear form. */
+    private static boolean validAmount(IngredientKind kind, String value, EditorSlot slot,
+                                       RecipePatch patch) {
+        int amount;
+        try {
+            amount = Integer.parseInt(value);
+        } catch (NumberFormatException exception) {
+            return false;
+        }
+        if (kind.acceptsAmount(amount)) {
+            return true;
+        }
+        return kind == IngredientKind.ITEM && amount == 0 && "input".equals(slot.role())
+                && SlotPatchFields.CLEARED_ITEM.equals(patch.fields().get(slot.key() + ".item"));
     }
 
     private static float cookingExperience(EditorModel model, RecipePatch patch) {
@@ -1251,32 +1788,9 @@ public final class RecipeEditsApplier {
         return Integer.parseInt(value);
     }
 
+    /** The ingredient a patch yields for one slot, or null when it clears it. */
     private static EditorIngredient patchedIngredient(EditorSlot slot, Map<String, String> fields) {
-        EditorIngredient original = slot.ingredient();
-        String itemId = fields.get(slot.key() + ".item");
-        String count = fields.get(slot.key() + ".count");
-        if (itemId == null && count == null) {
-            return original;
-        }
-        if ("minecraft:air".equals(itemId) || "0".equals(count)) {
-            return null;
-        }
-        if (itemId == null && original == null) {
-            return null;
-        }
-        if (original == null && count == null) {
-            return null;
-        }
-        if (itemId == null) {
-            itemId = original.itemId();
-        }
-        int parsedCount;
-        try {
-            parsedCount = count == null ? original.count() : Integer.parseInt(count);
-            return new EditorIngredient(itemId, parsedCount);
-        } catch (IllegalArgumentException exception) {
-            return null;
-        }
+        return SlotPatchFields.patched(fields, slot.key(), slot.ingredient());
     }
 
     private static List<EditorIngredient> shapedInputGrid(ShapedRecipe shaped, EditorModel model,
@@ -1395,7 +1909,7 @@ public final class RecipeEditsApplier {
                 continue;
             }
             Ingredient original = originals.get(Integer.valueOf(gridIndex));
-            result.add(ingredientJson(original, current, hasInputPatch(patch, slot.key())));
+            result.add(ingredientJson(original, current, hasSlotPatch(patch, slot.key())));
         }
         return result;
     }
@@ -1415,7 +1929,7 @@ public final class RecipeEditsApplier {
     private static String inputPatchKeyForGrid(ShapedRecipe shaped, EditorModel model,
                                                 RecipePatch patch, int gridIndex) {
         String fixedKey = "input." + gridIndex;
-        if (hasInputPatch(patch, fixedKey)) {
+        if (hasSlotPatch(patch, fixedKey)) {
             return fixedKey;
         }
         boolean fixedGrid = hasInputSlot(model, "input.8");
@@ -1432,16 +1946,15 @@ public final class RecipeEditsApplier {
             int mapped = fixedGrid ? compactIndex
                     : CraftingSlotMapper.craftingGridIndex(compactIndex,
                     width, height);
-            if (mapped == gridIndex && hasInputPatch(patch, slot.key())) {
+            if (mapped == gridIndex && hasSlotPatch(patch, slot.key())) {
                 return slot.key();
             }
         }
         return null;
     }
 
-    private static boolean hasInputPatch(RecipePatch patch, String slotKey) {
-        return patch.fields().containsKey(slotKey + ".item")
-                || patch.fields().containsKey(slotKey + ".count");
+    private static boolean hasSlotPatch(RecipePatch patch, String slotKey) {
+        return SlotPatchFields.touches(patch.fields(), slotKey);
     }
 
     private static boolean hasIngredient(List<EditorIngredient> grid) {

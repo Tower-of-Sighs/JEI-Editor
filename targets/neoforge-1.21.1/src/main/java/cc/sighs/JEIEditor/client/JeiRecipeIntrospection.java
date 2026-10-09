@@ -6,7 +6,6 @@ import mezz.jei.api.gui.inputs.RecipeSlotUnderMouse;
 import mezz.jei.api.gui.widgets.ITextWidget;
 import mezz.jei.api.gui.widgets.IRecipeWidget;
 import mezz.jei.api.gui.placement.HorizontalAlignment;
-import mezz.jei.api.ingredients.ITypedIngredient;
 import mezz.jei.api.constants.RecipeTypes;
 import mezz.jei.api.recipe.category.IRecipeCategory;
 import mezz.jei.api.recipe.IRecipeManager;
@@ -26,12 +25,13 @@ import mezz.jei.gui.overlay.IngredientListOverlay;
 import mezz.jei.gui.overlay.bookmarks.BookmarkOverlay;
 import mezz.jei.gui.overlay.ingredients.IIngredientGridView;
 import mezz.jei.library.plugins.vanilla.crafting.CraftingRecipeCategory;
+import cc.sighs.JEIEditor.platform.recipe.RecipeViewerAliases;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.Rect2i;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.navigation.ScreenPosition;
 import net.minecraft.network.chat.FormattedText;
 import net.minecraft.resources.ResourceLocation;
-import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.crafting.CraftingRecipe;
 import net.minecraft.world.item.crafting.RecipeHolder;
 
@@ -189,10 +189,6 @@ public final class JeiRecipeIntrospection {
         int y = offset.y() + rect.getY() + Math.max(0, rect.getHeight() / 2);
         Optional<RecipeSlotUnderMouse> hit = layout.getSlotUnderMouse(x, y);
         return hit.isPresent() && hit.get().slot() == slot;
-    }
-
-    static Optional<ItemStack> itemStack(ITypedIngredient<?> ingredient) {
-        return ingredient == null ? Optional.<ItemStack>empty() : ingredient.getItemStack();
     }
 
     /** Temporarily moves JEI text widgets out of a recipe layout while a
@@ -669,7 +665,8 @@ public final class JeiRecipeIntrospection {
                 && mouseY >= area.getY() && mouseY < area.getY() + area.getHeight();
     }
 
-    static Optional<ResourceLocation> recipeId(IRecipeCategory<?> category, Object recipe) {
+    /** Public so the development client tests resolve ids through the same code path. */
+    public static Optional<ResourceLocation> recipeId(IRecipeCategory<?> category, Object recipe) {
         if (recipe instanceof RecipeHolder<?>) {
             return Optional.of(((RecipeHolder<?>) recipe).id());
         }
@@ -683,6 +680,30 @@ public final class JeiRecipeIntrospection {
         } catch (RuntimeException ignored) {
             return Optional.empty();
         }
+    }
+
+    /**
+     * The manager's recipe for an id a page displayed, following the page's
+     * viewer alias when the id itself resolves to nothing.
+     *
+     * <p>A page can show another recipe type's recipes under a rewritten id (see
+     * {@link cc.sighs.JEIEditor.platform.recipe.RecipeViewerAliases}). The recipe
+     * the manager holds - and therefore the one an edit has to write - is the one
+     * behind the original id, so that is what a page displaying an alias is
+     * modelled and patched as.
+     */
+    public static Optional<RecipeHolder<?>> aliasedRecipeHolder(IRecipeCategory<?> category,
+                                                                ResourceLocation displayedId) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level == null || category == null || displayedId == null) {
+            return Optional.empty();
+        }
+        Optional<ResourceLocation> underlying = RecipeViewerAliases
+                .underlyingRecipeId(category.getRecipeType().getUid().toString(), displayedId);
+        if (!underlying.isPresent()) {
+            return Optional.empty();
+        }
+        return minecraft.level.getRecipeManager().byKey(underlying.get());
     }
 
     /**
@@ -735,7 +756,7 @@ public final class JeiRecipeIntrospection {
      * is intentionally exposed for adapters that need all role candidates,
      * rather than only the one item currently displayed in a cycling slot.
      */
-    static Optional<mezz.jei.api.ingredients.IIngredientSupplier> recipeIngredients(
+    public static Optional<mezz.jei.api.ingredients.IIngredientSupplier> recipeIngredients(
             IRecipeCategory<?> category, Object recipe) {
         if (category == null || recipe == null) {
             return Optional.empty();

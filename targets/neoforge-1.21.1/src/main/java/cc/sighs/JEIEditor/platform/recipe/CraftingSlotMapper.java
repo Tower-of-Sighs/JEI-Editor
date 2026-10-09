@@ -25,7 +25,7 @@ public final class CraftingSlotMapper {
             return null;
         }
         if (target.getRole() == RecipeIngredientRole.OUTPUT) {
-            return "output";
+            return outputSlotKey(model, slots, target);
         }
         if (target.getRole() != RecipeIngredientRole.INPUT) {
             return null;
@@ -51,7 +51,7 @@ public final class CraftingSlotMapper {
             return null;
         }
         if (!isCrafting(model)) {
-            int ordinal = inputOrdinal(slots, target);
+            int ordinal = roleOrdinal(slots, target, RecipeIngredientRole.INPUT);
             String mapped = model.properties().get(
                     JeiVanillaRecipeEditorAdapter.VISUAL_INPUT_PROPERTY_PREFIX + ordinal);
             if (hasInputSlot(model, mapped)) {
@@ -100,11 +100,32 @@ public final class CraftingSlotMapper {
     }
 
     private static boolean hasInputSlot(EditorModel model, String key) {
+        return hasSlot(model, key, "input");
+    }
+
+    /**
+     * The n-th OUTPUT slot of a multi-output page maps to {@code output.n}; a
+     * page with a single output keeps the historical {@code output} key, which
+     * the vanilla adapters, the patch shape and the docs all use.
+     */
+    private static String outputSlotKey(EditorModel model, List<IRecipeSlotView> slots, IRecipeSlotView target) {
+        if (hasSlot(model, "output", "output")) {
+            return "output";
+        }
+        int ordinal = roleOrdinal(slots, target, RecipeIngredientRole.OUTPUT);
+        if (ordinal < 0) {
+            return null;
+        }
+        String key = "output." + ordinal;
+        return hasSlot(model, key, "output") ? key : null;
+    }
+
+    private static boolean hasSlot(EditorModel model, String key, String role) {
         if (key == null) {
             return false;
         }
         for (cc.sighs.JEIEditor.editor.EditorSlot slot : model.slots()) {
-            if (key.equals(slot.key()) && "input".equals(slot.role())) {
+            if (key.equals(slot.key()) && role.equals(slot.role())) {
                 return true;
             }
         }
@@ -173,10 +194,11 @@ public final class CraftingSlotMapper {
         return index;
     }
 
-    private static int inputOrdinal(List<IRecipeSlotView> slots, IRecipeSlotView target) {
+    private static int roleOrdinal(List<IRecipeSlotView> slots, IRecipeSlotView target,
+                                   RecipeIngredientRole role) {
         int ordinal = 0;
         for (IRecipeSlotView slot : slots) {
-            if (slot.getRole() != RecipeIngredientRole.INPUT) {
+            if (slot.getRole() != role) {
                 continue;
             }
             if (slot == target) {
@@ -196,7 +218,7 @@ public final class CraftingSlotMapper {
     private static int visualGridIndex(List<IRecipeSlotView> slots, IRecipeSlotView target,
                                        int width, int height) {
         if (!(target instanceof IRecipeSlotDrawable)) {
-            return inputOrdinal(slots, target);
+            return roleOrdinal(slots, target, RecipeIngredientRole.INPUT);
         }
         List<IRecipeSlotDrawable> inputs = new ArrayList<IRecipeSlotDrawable>();
         for (IRecipeSlotView slot : slots) {

@@ -27,24 +27,58 @@ sourceSets.main.output.dir(
         builtBy: ':common:classes'
 )
 
+// Development-only client test source set. It is compiled as a second mod
+// ("jeieditortests") that only the "clientTest" run loads, so the published jar
+// - which is built from sourceSets.main - can never contain it.
+sourceSets.create('clientTest')
+
 neoForge {
     version = neoforge_121_version
 
-    runs {
-        client {
-            client()
-        }
-        server {
-            server()
-            programArgument '--nogui'
-        }
-    }
+    // The client test source set is the classpath of a real run, so it needs
+    // the same Minecraft/NeoForge dependencies as the main source set.
+    addModdingDependenciesTo(sourceSets.clientTest)
 
     mods {
         "${mod_id}" {
             sourceSet(sourceSets.main)
         }
+
+        // Development-only second mod: the JEI client test suite.
+        jeieditortests {
+            sourceSet(sourceSets.clientTest)
+        }
     }
+
+    runs {
+        client {
+            client()
+            loadedMods.set([mods.getByName(mod_id)])
+        }
+        server {
+            server()
+            programArgument '--nogui'
+            loadedMods.set([mods.getByName(mod_id)])
+        }
+        clientTest {
+            client()
+            // The editor has to be loaded for its adapters to run; the test
+            // mod is the second, development-only mod.
+            loadedMods.set([mods.getByName(mod_id), mods.getByName('jeieditortests')])
+            // Its own game directory keeps options, config and worlds away
+            // from the normal client run.
+            sourceSet.set(sourceSets.clientTest)
+            gameDirectory.set(file('run/clientTest'))
+            programArguments.addAll('--username', 'JEIClientTest')
+            systemProperty 'jeieditortests.report',
+                    project.layout.buildDirectory.file('client-test/report.json').get().asFile.absolutePath
+            systemProperty 'jeieditortests.wiredPages',
+                    project.layout.buildDirectory.file('client-test/wired-pages.txt').get().asFile.absolutePath
+            systemProperty 'jeieditortests.progress',
+                    project.layout.buildDirectory.file('client-test/progress.txt').get().asFile.absolutePath
+        }
+    }
+
 }
 
 repositories {
@@ -70,6 +104,17 @@ repositories {
 
 dependencies {
     implementation project(':common')
+
+    // The client tests compile against the editor's own classes (and the
+    // shared common classes) and against JEI.
+    clientTestImplementation sourceSets.main.output
+    clientTestImplementation project(':common')
+    clientTestImplementation "cc.sighs.modrinthmirror:jei:${jei_modrinth_version}"
+
+    // The fixed test pack lives in the normal run's mods folder. The test run
+    // has its own game directory, so it reads those jars from its classpath
+    // instead of the game directory.
+    clientTestRuntimeOnly fileTree('run/mods') { include '*.jar' }
 }
 
 tasks.named('processResources', ProcessResources).configure {

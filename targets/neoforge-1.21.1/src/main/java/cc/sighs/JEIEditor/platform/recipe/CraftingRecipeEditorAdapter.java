@@ -25,7 +25,10 @@ import java.util.Map;
 import java.util.Optional;
 
 /** Adapter for vanilla crafting recipes. Tag ingredients use a representative
- * item in the client model and are preserved until that slot is edited. */
+ * item in the client model and are preserved until that slot is edited.
+ *
+ * <p>Its scope is the two vanilla crafting serializers, not "any recipe whose
+ * class extends ShapedRecipe or ShapelessRecipe" - see {@link #supportsSerializer}. */
 public final class CraftingRecipeEditorAdapter {
     private CraftingRecipeEditorAdapter() {
     }
@@ -37,7 +40,16 @@ public final class CraftingRecipeEditorAdapter {
         }
 
         ResourceLocation serializerId = BuiltInRegistries.RECIPE_SERIALIZER.getKey(recipe.getSerializer());
-        if (serializerId == null) {
+        // The Java class alone is deliberately not enough. Mods ship their own serializers
+        // whose recipe class merely extends ShapedRecipe/ShapelessRecipe - Refined
+        // Storage's "refinedstorage:recoloring" (its codec is
+        // {ingredient, dye, result} and has no "ingredients" array at all) and Silent
+        // Gear's "silentgear:compound_part" are two in this pack - and the write path
+        // rebuilds a vanilla {"type","category","pattern"/"ingredients","key","result"}
+        // object that such a codec need not accept. Only claim the serializers this
+        // adapter really implements, so a modded one is left unmodelable instead of
+        // being offered for editing and then refused (or worse, written) by the server.
+        if (serializerId == null || !supportsSerializer(serializerId.toString())) {
             return Optional.empty();
         }
 
@@ -102,9 +114,16 @@ public final class CraftingRecipeEditorAdapter {
         return Optional.of(new EditorModel(holder.id().toString(), serializerId.toString(), fingerprint, slots));
     }
 
+    /** The serializers this adapter implements: the vanilla crafting pair. */
+    public static boolean supportsSerializer(String serializerId) {
+        return "minecraft:crafting_shaped".equals(serializerId)
+                || "minecraft:crafting_shapeless".equals(serializerId);
+    }
+
     public static RecipePatch replaceInput(EditorModel model, String slotKey, ItemStack stack) {
         Optional<EditorIngredient> ingredient = RecipeAdapterSupport.simpleStack(stack);
-        if (!ingredient.isPresent() || !slotKey.startsWith("input.")) {
+        if (!ingredient.isPresent() || !slotKey.startsWith("input.")
+                || !supportsSerializer(model == null ? null : model.serializerId())) {
             throw new IllegalArgumentException("only simple input slots can be replaced");
         }
         return RecipeAdapterSupport.slotPatch(model, slotKey, ingredient.get());
@@ -112,16 +131,14 @@ public final class CraftingRecipeEditorAdapter {
 
     public static RecipePatch replaceOutput(EditorModel model, ItemStack stack) {
         Optional<EditorIngredient> ingredient = RecipeAdapterSupport.simpleStack(stack);
-        if (!ingredient.isPresent()) {
+        if (!ingredient.isPresent() || !supportsSerializer(model == null ? null : model.serializerId())) {
             throw new IllegalArgumentException("only simple output items can be used");
         }
         return RecipeAdapterSupport.slotPatch(model, "output", ingredient.get());
     }
 
     public static RecipePatch clearSlot(EditorModel model, String slotKey) {
-        if (!("minecraft:crafting_shaped".equals(model.serializerId())
-                || "minecraft:crafting_shapeless".equals(model.serializerId()))
-                || !slotKey.startsWith("input.")) {
+        if (!supportsSerializer(model == null ? null : model.serializerId()) || !slotKey.startsWith("input.")) {
             throw new IllegalArgumentException("only crafting input slots can be cleared");
         }
         LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
@@ -133,6 +150,9 @@ public final class CraftingRecipeEditorAdapter {
     public static RecipePatch setOutputCount(EditorModel model, int count) {
         if (count < 1 || count > 64) {
             throw new IllegalArgumentException("output count must be between 1 and 64");
+        }
+        if (!supportsSerializer(model == null ? null : model.serializerId())) {
+            throw new IllegalArgumentException("this page has no editable output");
         }
         LinkedHashMap<String, String> fields = new LinkedHashMap<String, String>();
         fields.put("output.count", Integer.toString(count));
